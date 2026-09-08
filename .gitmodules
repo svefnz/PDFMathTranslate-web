@@ -1,0 +1,4 @@
+[submodule "upstream-core"]
+	path = upstream-core
+	url = https://github.com/PDFMathTranslate-next/PDFMathTranslate-next.git
+	branch = main

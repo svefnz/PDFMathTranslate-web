@@ -1,0 +1,57 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    # Runs at 03:00 UTC daily
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Update submodule to latest
+        run: |
+          git submodule update --remote --merge
+
+      - name: Check for upstream changes
+        id: check_diff
+        run: |
+          if git diff --quiet upstream-core; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes found in upstream-core."
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "New commits detected in upstream-core! Running smoke tests."
+          fi
+
+      - name: Set up Python
+        if: steps.check_diff.outputs.has_changes == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Smoke Test Core Import
+        if: steps.check_diff.outputs.has_changes == 'true'
+        run: |
+          pip install -e ./upstream-core
+          pip install -r backend/requirements.txt
+          python -c "import pdf2zh_next; print('Successfully imported pdf2zh_next version:', pdf2zh_next.__version__)"
+
+      - name: Commit and Push Submodule Pointer
+        if: steps.check_diff.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add upstream-core
+          git commit -m "chore(deps): auto-sync upstream-core to latest"
+          git push origin main
