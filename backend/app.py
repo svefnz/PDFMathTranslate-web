@@ -16,7 +16,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from adapter import TranslationAdapter
+import sys
+
+# Ensure backend directory is in sys.path
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+try:
+    from backend.adapter import TranslationAdapter
+except ImportError:
+    from adapter import TranslationAdapter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pdf2zh-web")
