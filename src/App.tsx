@@ -48,9 +48,10 @@ const LANGUAGES = [
 ]
 
 const POPULAR_ENGINES = [
+  { id: "SiliconFlowFree", name: "SiliconFlow (官方免费体验)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: false },
   { id: "OpenAI", name: "OpenAI", defaultModel: "gpt-4o-mini", needKey: true },
   { id: "DeepSeek", name: "DeepSeek", defaultModel: "deepseek-chat", needKey: true },
-  { id: "SiliconFlow", name: "SiliconFlow (硅基流动)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: true },
+  { id: "SiliconFlow", name: "SiliconFlow (自填 API Key)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: true },
   { id: "Ollama", name: "Ollama (本地私有化)", defaultModel: "qwen2.5", needKey: false },
   { id: "Google", name: "Google Translate (免Key)", defaultModel: "", needKey: false },
   { id: "Bing", name: "Bing (微软免费)", defaultModel: "", needKey: false },
@@ -84,10 +85,10 @@ export function App() {
   // Options
   const [langIn, setLangIn] = useState("en")
   const [langOut, setLangOut] = useState("zh-CN")
-  const [engineType, setEngineType] = useState("OpenAI")
+  const [engineType, setEngineType] = useState("SiliconFlowFree")
   const [apiKey, setApiKey] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
-  const [modelName, setModelName] = useState("gpt-4o-mini")
+  const [modelName, setModelName] = useState("Qwen/Qwen2.5-7B-Instruct")
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Translation execution state
@@ -171,6 +172,14 @@ export function App() {
       return
     }
 
+    const currentEng = POPULAR_ENGINES.find((e) => e.id === engineType)
+    if (currentEng?.needKey && !apiKey.trim()) {
+      setErrorMsg(
+        `请先填写 ${currentEng.name} 的 API Key，或者选择“SiliconFlow (官方免费体验)”直接免 Key 翻译`
+      )
+      return
+    }
+
     setErrorMsg(null)
     setIsTranslating(true)
     setProgress(1)
@@ -211,7 +220,14 @@ export function App() {
       })
 
       if (!response.ok) {
-        throw new Error(`启动翻译失败: ${response.statusText}`)
+        let errDetail = response.statusText
+        try {
+          const errJson = await response.json()
+          if (errJson.detail) errDetail = errJson.detail
+        } catch {
+          // ignore
+        }
+        throw new Error(errDetail)
       }
 
       const reader = response.body?.getReader()

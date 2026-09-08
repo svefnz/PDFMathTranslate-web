@@ -77,25 +77,30 @@ class TranslationAdapter:
         settings = ConfigManager().initialize_config()
         settings.translation.lang_in = lang_in
         settings.translation.lang_out = lang_out
-        settings.translation.output_dir = output_dir
+        settings.translation.output = str(output_dir)
 
         if thread_count:
             settings.translation.thread = thread_count
 
-        # Activate selected engine
         metadata = TRANSLATION_ENGINE_METADATA_MAP.get(engine_type)
         if not metadata:
             raise ValueError(f"Unsupported translation engine: {engine_type}")
 
-        # Set engine flag (e.g. settings.openai = True)
-        setattr(settings, metadata.cli_flag_name, True)
+        # Clean config dictionary to only include valid fields for this engine
+        valid_fields = metadata.setting_model_type.model_fields.keys() if metadata.setting_model_type else []
+        filtered_config = {
+            k: v for k, v in engine_config.items()
+            if v is not None and v != "" and k in valid_fields
+        }
 
-        # Apply specific engine fields
-        if metadata.cli_detail_field_name:
-            detail_settings = getattr(settings, metadata.cli_detail_field_name)
-            for k, v in engine_config.items():
-                if v is not None and hasattr(detail_settings, k):
-                    setattr(detail_settings, k, v)
+        # Instantiate the engine settings model
+        try:
+            settings.translate_engine_settings = metadata.setting_model_type(**filtered_config)
+        except Exception as e:
+            raise ValueError(f"Invalid parameters for {engine_type}: {e}") from e
+
+        # Validate settings (engine validation & term extraction engine setup)
+        settings.validate_settings()
 
         return settings
 
