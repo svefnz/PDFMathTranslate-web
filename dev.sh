@@ -44,8 +44,8 @@ else
 fi
 
 # 4. 启动后端 (后台运行)
-echo "🚀 正在启动 FastAPI 后端服务 (http://localhost:8000)..."
-python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload &
+echo "🚀 正在启动 FastAPI 后端服务 (http://localhost:8765)..."
+python -m uvicorn backend.app:app --host 0.0.0.0 --port 8765 --reload &
 BACKEND_PID=$!
 
 cleanup() {
