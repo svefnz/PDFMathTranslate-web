@@ -74,7 +74,14 @@ class TranslationAdapter:
         """
         Constructs and validates the SettingsModel required by BabelDOC / pdf2zh_next.
         """
-        settings = ConfigManager().initialize_config()
+        # Temporarily isolate sys.argv so argparse in ConfigManager does not choke on uvicorn CLI args
+        saved_argv = sys.argv
+        try:
+            sys.argv = [sys.argv[0]]
+            settings = ConfigManager().initialize_config()
+        finally:
+            sys.argv = saved_argv
+
         settings.translation.lang_in = lang_in
         settings.translation.lang_out = lang_out
         settings.translation.output = str(output_dir)
