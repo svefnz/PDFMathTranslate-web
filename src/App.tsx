@@ -370,6 +370,7 @@ export function App() {
         no_dual: settings.noDual,
         translate_table_text: settings.translateTableText,
         skip_scanned_detection: settings.skipScannedDetection,
+        auto_enable_ocr_workaround: settings.autoEnableOcrWorkaround,
       }
 
       const requestPayload: Record<string, any> = {
@@ -467,7 +468,11 @@ export function App() {
                   setPreviewTab("dual")
                   setIsTranslating(false)
                 } else if (currentEvent === "error") {
-                  setErrorMsg(parsed.error || "翻译过程中发生错误")
+                  let errText = parsed.error || "翻译过程中发生错误"
+                  if (typeof errText === "string" && errText.includes("Scanned PDF detected")) {
+                    errText = "文档疑似为扫描件或含有大量图片底图。请点击右上角「设置中心」->「PDF 排版与输出」，开启【跳过扫描件检测】或【自动 OCR 变通方案】后重新点击翻译。"
+                  }
+                  setErrorMsg(errText)
                   setIsTranslating(false)
                 }
               } catch {
@@ -478,7 +483,11 @@ export function App() {
         }
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "请求失败")
+      let msg = err.message || "请求失败"
+      if (typeof msg === "string" && msg.includes("Scanned PDF detected")) {
+        msg = "文档疑似为扫描件或含有大量图片底图。请点击右上角「设置中心」->「PDF 排版与输出」，开启【跳过扫描件检测】后重试。"
+      }
+      setErrorMsg(msg)
       setIsTranslating(false)
     }
   }

@@ -21,6 +21,7 @@ export interface AppSettings {
   noDual: boolean
   translateTableText: boolean
   skipScannedDetection: boolean
+  autoEnableOcrWorkaround: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -58,6 +59,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   noDual: false,
   translateTableText: true,
   skipScannedDetection: false,
+  autoEnableOcrWorkaround: false,
 }
 
 const SETTINGS_STORAGE_KEY = "pdf2zh_web_settings_v1"

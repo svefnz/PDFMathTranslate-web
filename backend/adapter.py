@@ -122,6 +122,10 @@ class TranslationAdapter:
                 settings.pdf.translate_table_text = bool(advanced_settings["translate_table_text"])
             if "skip_scanned_detection" in advanced_settings:
                 settings.pdf.skip_scanned_detection = bool(advanced_settings["skip_scanned_detection"])
+            if "auto_enable_ocr_workaround" in advanced_settings:
+                settings.pdf.auto_enable_ocr_workaround = bool(advanced_settings["auto_enable_ocr_workaround"])
+            if "ocr_workaround" in advanced_settings:
+                settings.pdf.ocr_workaround = bool(advanced_settings["ocr_workaround"])
 
         metadata = TRANSLATION_ENGINE_METADATA_MAP.get(engine_type)
         if not metadata:

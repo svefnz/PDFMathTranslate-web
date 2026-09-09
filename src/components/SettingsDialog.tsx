@@ -508,13 +508,30 @@ export function SettingsDialog({
                         跳过扫描件检测 (Skip Scanned Detection)
                       </Label>
                       <span className="text-[11px] text-muted-foreground">
-                        已确认全部为可选择文本的电子版 PDF 时可开启，加快处理速度
+                        遇到“Scanned PDF detected”错误时开启，强制解析排版并忽略扫描告警
                       </span>
                     </div>
                     <Switch
                       checked={draft.skipScannedDetection}
                       onCheckedChange={(val) =>
                         setDraft({ ...draft, skipScannedDetection: val })
+                      }
+                    />
+                  </div>
+
+                  <div className="p-3 flex items-center justify-between border-t">
+                    <div>
+                      <Label className="text-xs font-medium text-foreground block">
+                        自动启用 OCR 变通方案 (Auto OCR Workaround)
+                      </Label>
+                      <span className="text-[11px] text-muted-foreground">
+                        针对重度扫描或含图片底图的文档启用白底覆盖，避免译文与原底图文字混叠
+                      </span>
+                    </div>
+                    <Switch
+                      checked={draft.autoEnableOcrWorkaround}
+                      onCheckedChange={(val) =>
+                        setDraft({ ...draft, autoEnableOcrWorkaround: val })
                       }
                     />
                   </div>
