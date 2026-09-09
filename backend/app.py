@@ -378,7 +378,15 @@ async def stream_translation(
         finally:
             active_tasks.pop(session_id, None)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        ping=10,
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/cancel/{session_id}")
