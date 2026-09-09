@@ -89,7 +89,7 @@ class TranslationAdapter:
         settings.translation.output = str(output_dir)
 
         if thread_count:
-            settings.translation.thread = thread_count
+            settings.translation.pool_max_workers = thread_count
 
         if pages and pages.strip():
             settings.pdf.pages = pages.strip()

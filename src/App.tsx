@@ -25,6 +25,13 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { SettingsDialog } from "@/components/SettingsDialog"
 import { type AppSettings, loadSettings, saveSettings } from "@/types/settings"
 
@@ -63,6 +70,10 @@ const POPULAR_ENGINES = [
   { id: "Google", name: "Google Translate (免Key)", defaultModel: "", needKey: false },
   { id: "Bing", name: "Bing (微软免费)", defaultModel: "", needKey: false },
 ]
+
+const ENGINE_ITEMS: Record<string, string> = Object.fromEntries(
+  POPULAR_ENGINES.map((item) => [item.id, item.name])
+)
 
 function GithubIcon({ className }: { className?: string }) {
   return (
@@ -115,36 +126,10 @@ export function App() {
   const [engineType, setEngineType] = useState(() => settings.defaultEngine || "SiliconFlowFree")
   const [apiKey, setApiKey] = useState(() => settings.apiKeys[settings.defaultEngine] || "")
   const [baseUrl, setBaseUrl] = useState(() => settings.baseUrls[settings.defaultEngine] || "")
-  const [modelName, setModelName] = useState(() => settings.modelNames[settings.defaultEngine] || "Qwen/Qwen2.5-7B-Instruct")
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [modelName, setModelName] = useState(
+    () => settings.modelNames[settings.defaultEngine] || "Qwen/Qwen2.5-7B-Instruct"
+  )
   const [pageRange, setPageRange] = useState("")
-
-  // Save Settings handler
-  const handleSaveSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings)
-    saveSettings(newSettings)
-    // If active engine credentials updated, sync them
-    if (newSettings.apiKeys[engineType] !== undefined) {
-      setApiKey(newSettings.apiKeys[engineType] || "")
-    }
-    if (newSettings.baseUrls[engineType] !== undefined) {
-      setBaseUrl(newSettings.baseUrls[engineType] || "")
-    }
-    if (newSettings.modelNames[engineType] !== undefined) {
-      setModelName(newSettings.modelNames[engineType] || "")
-    }
-  }
-
-  // Handle API key change from main page (auto-persisted to settings)
-  const handleApiKeyChange = (val: string) => {
-    setApiKey(val)
-    const updated = {
-      ...settings,
-      apiKeys: { ...settings.apiKeys, [engineType]: val },
-    }
-    setSettings(updated)
-    saveSettings(updated)
-  }
 
   // Handle engine change
   const handleEngineChange = (eType: string) => {
@@ -164,6 +149,28 @@ export function App() {
       } else {
         setBaseUrl("")
       }
+    }
+  }
+
+  // Save Settings handler
+  const handleSaveSettings = (newSettings: AppSettings) => {
+    const defaultChanged =
+      newSettings.defaultEngine && newSettings.defaultEngine !== settings.defaultEngine
+    setSettings(newSettings)
+    saveSettings(newSettings)
+    if (defaultChanged) {
+      handleEngineChange(newSettings.defaultEngine)
+      return
+    }
+    // If active engine credentials updated, sync them
+    if (newSettings.apiKeys[engineType] !== undefined) {
+      setApiKey(newSettings.apiKeys[engineType] || "")
+    }
+    if (newSettings.baseUrls[engineType] !== undefined) {
+      setBaseUrl(newSettings.baseUrls[engineType] || "")
+    }
+    if (newSettings.modelNames[engineType] !== undefined) {
+      setModelName(newSettings.modelNames[engineType] || "")
     }
   }
 
@@ -610,89 +617,65 @@ export function App() {
               </div>
 
               {/* Translation Engine Selection */}
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1 block">翻译引擎</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  {POPULAR_ENGINES.map((item) => (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">翻译服务引擎</Label>
+                  {POPULAR_ENGINES.find((e) => e.id === engineType)?.needKey && !apiKey.trim() ? (
                     <button
-                      key={item.id}
                       type="button"
-                      onClick={() => handleEngineChange(item.id)}
-                      className={`text-left px-3 py-2 rounded-xl text-xs border transition-all ${
-                        engineType === item.id
-                          ? "border-primary bg-primary/10 font-semibold text-primary shadow-xs"
-                          : "border-muted hover:border-border hover:bg-muted/30 text-muted-foreground"
-                      }`}
+                      onClick={() => setSettingsOpen(true)}
+                      className="text-[11px] text-amber-500 hover:text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 transition-colors cursor-pointer"
                     >
-                      {item.name}
+                      <AlertCircle className="w-3 h-3 inline" />
+                      <span>未配置 Key，点击去设置</span>
                     </button>
-                  ))}
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSettingsOpen(true)}
+                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline transition-colors cursor-pointer"
+                    >
+                      高级配置
+                    </button>
+                  )}
                 </div>
+                <Select
+                  items={ENGINE_ITEMS}
+                  value={engineType}
+                  onValueChange={(val) => {
+                    if (val) handleEngineChange(val)
+                  }}
+                >
+                  <SelectTrigger className="w-full text-xs h-9 rounded-xl bg-background border border-input shadow-xs">
+                    <SelectValue placeholder="选择翻译引擎" />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl">
+                    {POPULAR_ENGINES.map((item) => (
+                      <SelectItem key={item.id} value={item.id} className="text-xs">
+                        <div className="flex items-center justify-between w-full pr-2">
+                          <span>{item.name}</span>
+                          {item.needKey && !settings.apiKeys[item.id]?.trim() && (
+                            <span className="text-[10px] text-amber-500 font-mono ml-2">待填Key</span>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
-              {/* Engine Specific Inputs */}
-              <div className="space-y-3 pt-1">
-                {POPULAR_ENGINES.find((e) => e.id === engineType)?.needKey && (
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-1 block">
-                      {engineType} API Key
-                    </Label>
-                    <Input
-                      type="password"
-                      placeholder={`请输入您的 ${engineType} API Key`}
-                      value={apiKey}
-                      onChange={(e) => handleApiKeyChange(e.target.value)}
-                      className="rounded-xl text-xs h-9"
-                    />
-                  </div>
-                )}
-
+              {/* Page Range Selection */}
+              <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="text-xs text-primary hover:underline flex items-center gap-1"
-                  >
-                    <span>{showAdvanced ? "收起高级参数" : "展开高级参数 (Base URL / 模型名称)"}</span>
-                  </button>
+                  <Label className="text-xs font-medium text-foreground">页码范围（选填）</Label>
+                  <span className="text-[10px] text-muted-foreground font-mono">留空则翻译全书</span>
                 </div>
-
-                {showAdvanced && (
-                  <div className="space-y-3 p-3 rounded-xl bg-muted/30 border border-muted/50 text-xs">
-                    <div>
-                      <Label className="text-xs text-muted-foreground mb-1 block">API Base URL (留空使用官方默认)</Label>
-                      <Input
-                        placeholder="https://api.openai.com/v1"
-                        value={baseUrl}
-                        onChange={(e) => setBaseUrl(e.target.value)}
-                        className="rounded-xl text-xs h-8"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs text-muted-foreground mb-1 block">指定模型名称</Label>
-                      <Input
-                        placeholder="gpt-4o-mini"
-                        value={modelName}
-                        onChange={(e) => setModelName(e.target.value)}
-                        className="rounded-xl text-xs h-8"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Page Range Selection */}
-                <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs font-medium text-foreground">页码范围（选填）</Label>
-                    <span className="text-[10px] text-muted-foreground font-mono">留空则翻译全书</span>
-                  </div>
-                  <Input
-                    placeholder="例: 1-3 或 1,2,5 (推荐多页大文档测试使用)"
-                    value={pageRange}
-                    onChange={(e) => setPageRange(e.target.value)}
-                    className="rounded-lg text-xs h-8 bg-background"
-                  />
-                </div>
+                <Input
+                  placeholder="例: 1-3 或 1,2,5 (推荐多页大文档测试使用)"
+                  value={pageRange}
+                  onChange={(e) => setPageRange(e.target.value)}
+                  className="rounded-lg text-xs h-8 bg-background"
+                />
               </div>
 
               {/* Action Buttons */}
