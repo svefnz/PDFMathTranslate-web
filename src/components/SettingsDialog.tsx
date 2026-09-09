@@ -115,11 +115,11 @@ export function SettingsDialog({
                     }
                     className="text-xs border rounded-xl px-2.5 py-1.5 bg-background font-medium focus:ring-2 focus:ring-primary/20 outline-none"
                   >
-                    <option value="SiliconFlowFree">SiliconFlow (官方免费体验)</option>
-                    <option value="DeepSeek">DeepSeek (官方 API)</option>
-                    <option value="SiliconFlow">SiliconFlow (独立 Key)</option>
-                    <option value="OpenAI">OpenAI (ChatGPT)</option>
-                    <option value="Ollama">Ollama (本地部署)</option>
+                    <option value="SiliconFlowFree">SiliconFlow - 免费</option>
+                    <option value="DeepSeek">DeepSeek</option>
+                    <option value="SiliconFlow">SiliconFlow API</option>
+                    <option value="OpenAI">OpenAI</option>
+                    <option value="Ollama">Ollama - 本地免费</option>
                   </select>
                 </div>
 

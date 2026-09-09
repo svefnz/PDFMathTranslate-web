@@ -66,13 +66,13 @@ const LANGUAGES = [
 ]
 
 const POPULAR_ENGINES = [
-  { id: "SiliconFlowFree", name: "SiliconFlow (官方免费体验)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: false },
+  { id: "SiliconFlowFree", name: "SiliconFlow", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: false },
   { id: "OpenAI", name: "OpenAI", defaultModel: "gpt-4o-mini", needKey: true },
   { id: "DeepSeek", name: "DeepSeek", defaultModel: "deepseek-chat", needKey: true },
-  { id: "SiliconFlow", name: "SiliconFlow (自填 API Key)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: true },
-  { id: "Ollama", name: "Ollama (本地私有化)", defaultModel: "qwen2.5", needKey: false },
-  { id: "Google", name: "Google Translate (免Key·需境外网络)", defaultModel: "", needKey: false },
-  { id: "Bing", name: "Bing (微软免费·易受风控)", defaultModel: "", needKey: false },
+  { id: "SiliconFlow", name: "SiliconFlow API", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: true },
+  { id: "Ollama", name: "Ollama", defaultModel: "qwen2.5", needKey: false },
+  { id: "Google", name: "Google Translate", defaultModel: "", needKey: false },
+  { id: "Bing", name: "Bing", defaultModel: "", needKey: false },
 ]
 
 const ENGINE_ITEMS: Record<string, string> = Object.fromEntries(
@@ -345,7 +345,7 @@ export function App() {
     const currentEng = POPULAR_ENGINES.find((e) => e.id === engineType)
     if (currentEng?.needKey && !apiKey.trim()) {
       setErrorMsg(
-        `请先填写 ${currentEng.name} 的 API Key，或者选择“SiliconFlow (官方免费体验)”直接免 Key 翻译`
+        `请先填写 ${currentEng.name} 的 API Key，或者切换至“SiliconFlow”免费服务直接翻译`
       )
       return
     }
@@ -793,16 +793,25 @@ export function App() {
                     <SelectValue placeholder="选择翻译引擎" />
                   </SelectTrigger>
                   <SelectContent className="rounded-xl">
-                    {POPULAR_ENGINES.map((item) => (
-                      <SelectItem key={item.id} value={item.id} className="text-xs">
-                        <div className="flex items-center justify-between w-full pr-2">
-                          <span>{item.name}</span>
-                          {item.needKey && !settings.apiKeys[item.id]?.trim() && (
-                            <span className="text-[10px] text-amber-500 font-mono ml-2">待填Key</span>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
+                    {POPULAR_ENGINES.map((item) => {
+                      const hasKey = Boolean(settings.apiKeys[item.id]?.trim())
+                      return (
+                        <SelectItem key={item.id} value={item.id} className="text-xs">
+                          <div className="flex items-center justify-between w-full pr-2">
+                            <span>{item.name}</span>
+                            {item.needKey ? (
+                              !hasKey ? (
+                                <span className="text-[10px] text-amber-500 font-mono ml-2">待填Key</span>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground font-mono ml-2">已配置</span>
+                              )
+                            ) : (
+                              <span className="text-[10px] text-emerald-500 font-mono ml-2">免费</span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
               </div>
