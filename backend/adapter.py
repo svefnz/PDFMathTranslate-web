@@ -71,6 +71,7 @@ class TranslationAdapter:
         output_dir: Path,
         thread_count: int | None = None,
         pages: str | None = None,
+        advanced_settings: dict[str, Any] | None = None,
     ) -> SettingsModel:
         """
         Constructs and validates the SettingsModel required by BabelDOC / pdf2zh_next.
@@ -92,6 +93,35 @@ class TranslationAdapter:
 
         if pages and pages.strip():
             settings.pdf.pages = pages.strip()
+
+        if advanced_settings:
+            # Watermark mode: "watermarked", "no_watermark", "both"
+            if "watermark_output_mode" in advanced_settings:
+                settings.pdf.watermark_output_mode = str(advanced_settings["watermark_output_mode"])
+
+            # Glossary / Terminology
+            if "no_auto_extract_glossary" in advanced_settings:
+                settings.translation.no_auto_extract_glossary = bool(advanced_settings["no_auto_extract_glossary"])
+            if "term_qps" in advanced_settings and advanced_settings["term_qps"] is not None:
+                settings.translation.term_qps = int(advanced_settings["term_qps"])
+            if "term_pool_max_workers" in advanced_settings and advanced_settings["term_pool_max_workers"] is not None:
+                settings.translation.term_pool_max_workers = int(advanced_settings["term_pool_max_workers"])
+
+            # PDF Output Layout
+            if "dual_translate_first" in advanced_settings:
+                settings.pdf.dual_translate_first = bool(advanced_settings["dual_translate_first"])
+            if "use_alternating_pages_dual" in advanced_settings:
+                settings.pdf.use_alternating_pages_dual = bool(advanced_settings["use_alternating_pages_dual"])
+            if "only_include_translated_page" in advanced_settings:
+                settings.pdf.only_include_translated_page = bool(advanced_settings["only_include_translated_page"])
+            if "no_mono" in advanced_settings:
+                settings.pdf.no_mono = bool(advanced_settings["no_mono"])
+            if "no_dual" in advanced_settings:
+                settings.pdf.no_dual = bool(advanced_settings["no_dual"])
+            if "translate_table_text" in advanced_settings:
+                settings.pdf.translate_table_text = bool(advanced_settings["translate_table_text"])
+            if "skip_scanned_detection" in advanced_settings:
+                settings.pdf.skip_scanned_detection = bool(advanced_settings["skip_scanned_detection"])
 
         metadata = TRANSLATION_ENGINE_METADATA_MAP.get(engine_type)
         if not metadata:

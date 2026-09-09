@@ -4,6 +4,7 @@ import {
   Upload,
   ArrowRightLeft,
   Settings2,
+  Settings,
   Sparkles,
   Download,
   AlertCircle,
@@ -23,6 +24,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+
+import { SettingsDialog } from "@/components/SettingsDialog"
+import { type AppSettings, loadSettings, saveSettings } from "@/types/settings"
 
 interface UploadedFileInfo {
   fileId: string
@@ -101,15 +105,67 @@ export function App() {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Global Settings Modal & Persistence
+  const [settings, setSettings] = useState<AppSettings>(loadSettings)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
   // Options
   const [langIn, setLangIn] = useState("en")
   const [langOut, setLangOut] = useState("zh-CN")
-  const [engineType, setEngineType] = useState("SiliconFlowFree")
-  const [apiKey, setApiKey] = useState("")
-  const [baseUrl, setBaseUrl] = useState("")
-  const [modelName, setModelName] = useState("Qwen/Qwen2.5-7B-Instruct")
+  const [engineType, setEngineType] = useState(() => settings.defaultEngine || "SiliconFlowFree")
+  const [apiKey, setApiKey] = useState(() => settings.apiKeys[settings.defaultEngine] || "")
+  const [baseUrl, setBaseUrl] = useState(() => settings.baseUrls[settings.defaultEngine] || "")
+  const [modelName, setModelName] = useState(() => settings.modelNames[settings.defaultEngine] || "Qwen/Qwen2.5-7B-Instruct")
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [pageRange, setPageRange] = useState("")
+
+  // Save Settings handler
+  const handleSaveSettings = (newSettings: AppSettings) => {
+    setSettings(newSettings)
+    saveSettings(newSettings)
+    // If active engine credentials updated, sync them
+    if (newSettings.apiKeys[engineType] !== undefined) {
+      setApiKey(newSettings.apiKeys[engineType] || "")
+    }
+    if (newSettings.baseUrls[engineType] !== undefined) {
+      setBaseUrl(newSettings.baseUrls[engineType] || "")
+    }
+    if (newSettings.modelNames[engineType] !== undefined) {
+      setModelName(newSettings.modelNames[engineType] || "")
+    }
+  }
+
+  // Handle API key change from main page (auto-persisted to settings)
+  const handleApiKeyChange = (val: string) => {
+    setApiKey(val)
+    const updated = {
+      ...settings,
+      apiKeys: { ...settings.apiKeys, [engineType]: val },
+    }
+    setSettings(updated)
+    saveSettings(updated)
+  }
+
+  // Handle engine change
+  const handleEngineChange = (eType: string) => {
+    setEngineType(eType)
+    const eng = POPULAR_ENGINES.find((item) => item.id === eType)
+    if (eng) {
+      setModelName(settings.modelNames[eType] || eng.defaultModel)
+      setApiKey(settings.apiKeys[eType] || "")
+      if (settings.baseUrls[eType]) {
+        setBaseUrl(settings.baseUrls[eType])
+      } else if (eType === "Ollama") {
+        setBaseUrl("http://localhost:11434")
+      } else if (eType === "SiliconFlow") {
+        setBaseUrl("https://api.siliconflow.cn/v1")
+      } else if (eType === "DeepSeek") {
+        setBaseUrl("https://api.deepseek.com")
+      } else {
+        setBaseUrl("")
+      }
+    }
+  }
 
   // Translation execution state
   const [isTranslating, setIsTranslating] = useState(false)
@@ -140,24 +196,6 @@ export function App() {
     const temp = langIn
     setLangIn(langOut)
     setLangOut(temp)
-  }
-
-  // Handle engine change
-  const handleEngineChange = (eType: string) => {
-    setEngineType(eType)
-    const eng = POPULAR_ENGINES.find((item) => item.id === eType)
-    if (eng) {
-      setModelName(eng.defaultModel)
-      if (eType === "Ollama") {
-        setBaseUrl("http://localhost:11434")
-      } else if (eType === "SiliconFlow") {
-        setBaseUrl("https://api.siliconflow.cn/v1")
-      } else if (eType === "DeepSeek") {
-        setBaseUrl("https://api.deepseek.com")
-      } else {
-        setBaseUrl("")
-      }
-    }
   }
 
   // File upload handler
@@ -238,15 +276,35 @@ export function App() {
     } else if (engineType === "Ollama") {
       if (baseUrl) engineConfig.ollama_host = baseUrl
       if (modelName) engineConfig.ollama_model = modelName
+    } else if (engineType === "SiliconFlowFree") {
+      if (settings.enableJsonMode) {
+        engineConfig.enable_json_mode = true
+      }
     }
 
     try {
+      const advancedSettings = {
+        watermark_output_mode: settings.watermarkMode,
+        no_auto_extract_glossary: !settings.enableGlossary,
+        term_qps: settings.termQps,
+        term_pool_max_workers: settings.termPoolWorkers,
+        dual_translate_first: settings.dualTranslateFirst,
+        use_alternating_pages_dual: settings.useAlternatingPages,
+        only_include_translated_page: settings.onlyIncludeTranslatedPage,
+        no_mono: settings.noMono,
+        no_dual: settings.noDual,
+        translate_table_text: settings.translateTableText,
+        skip_scanned_detection: settings.skipScannedDetection,
+      }
+
       const requestPayload: Record<string, any> = {
         file_id: file.fileId,
         lang_in: langIn,
         lang_out: langOut,
         engine_type: engineType,
         engine_config: engineConfig,
+        thread_count: settings.threadCount,
+        advanced_settings: advancedSettings,
       }
       if (pageRange.trim()) {
         requestPayload.pages = pageRange.trim()
@@ -384,13 +442,25 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Settings Center Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSettingsOpen(true)}
+            className="gap-1.5 rounded-full text-xs h-8 font-medium shadow-2xs hover:bg-muted"
+            title="系统设置与偏好"
+          >
+            <Settings className="w-3.5 h-3.5 text-primary" />
+            <span>设置中心</span>
+          </Button>
+
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setIsDark(!isDark)}
             className="rounded-full w-8 h-8 p-0"
           >
-            {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
           </Button>
 
           <a
@@ -398,9 +468,9 @@ export function App() {
             target="_blank"
             rel="noreferrer"
           >
-            <Button variant="outline" size="sm" className="gap-1.5 rounded-full text-xs">
+            <Button variant="outline" size="sm" className="gap-1.5 rounded-full text-xs h-8">
               <GithubIcon className="w-3.5 h-3.5" />
-              <span>上游仓库</span>
+              <span className="hidden md:inline">上游仓库</span>
               <ExternalLink className="w-3 h-3 text-muted-foreground" />
             </Button>
           </a>
@@ -571,7 +641,7 @@ export function App() {
                       type="password"
                       placeholder={`请输入您的 ${engineType} API Key`}
                       value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
+                      onChange={(e) => handleApiKeyChange(e.target.value)}
                       className="rounded-xl text-xs h-9"
                     />
                   </div>
@@ -860,6 +930,14 @@ export function App() {
           </Card>
         </div>
       </main>
+
+      {/* Global Settings Dialog */}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        settings={settings}
+        onSave={handleSaveSettings}
+      />
     </div>
   )
 }

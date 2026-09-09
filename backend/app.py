@@ -62,6 +62,7 @@ class TranslationRequest(BaseModel):
     engine_config: dict[str, Any] = Field(default_factory=dict)
     thread_count: int | None = None
     pages: str | None = None
+    advanced_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 @app.get("/api/health")
@@ -125,6 +126,7 @@ async def stream_translation(req: TranslationRequest):
             output_dir=session_output_dir,
             thread_count=req.thread_count,
             pages=req.pages,
+            advanced_settings=req.advanced_settings,
         )
     except Exception as e:
         logger.error(f"Failed to build translation settings: {e}")
