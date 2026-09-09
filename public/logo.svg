@@ -1,32 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
-  <defs>
-    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#4F46E5" />
-      <stop offset="50%" stop-color="#6366F1" />
-      <stop offset="100%" stop-color="#8B5CF6" />
-    </linearGradient>
-    <linearGradient id="docGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95" />
-      <stop offset="100%" stop-color="#EEF2FF" stop-opacity="0.85" />
-    </linearGradient>
-  </defs>
-
-  <!-- Background Squircle -->
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#brandGrad)" />
-  <rect x="32" y="32" width="448" height="448" rx="112" fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="4" />
-
-  <!-- Document Outline Shape -->
-  <path d="M140 120 C140 106.7 150.7 96 164 96 L296 96 L372 172 L372 392 C372 405.3 361.3 416 348 416 L164 416 C150.7 416 140 405.3 140 392 Z" fill="url(#docGrad)" />
-
-  <!-- Document Fold Corner -->
-  <path d="M296 96 L296 160 C296 166.6 301.4 172 308 172 L372 172 Z" fill="#C7D2FE" />
-
-  <!-- Mathematical Sigma ∑ in Center -->
-  <path d="M216 184 L308 184 C314.6 184 320 189.4 320 196 C320 199.5 318.4 202.8 315.6 204.9 L258 248 L315.6 291.1 C318.4 293.2 320 296.5 320 300 C320 306.6 314.6 312 308 312 L216 312 C209.4 312 204 306.6 204 300 C204 293.4 209.4 288 216 288 L278 288 L232.8 254.1 C229.8 251.8 228 248.3 228 244.5 C228 240.7 229.8 237.2 232.8 234.9 L278 208 L216 208 C209.4 208 204 202.6 204 196 C204 189.4 209.4 184 216 184 Z" fill="#4338CA" />
-
-  <!-- Bilingual translation badge in bottom-right corner of document -->
-  <g transform="translate(268, 318)">
-    <rect x="0" y="0" width="84" height="64" rx="14" fill="#4F46E5" />
-    <text x="42" y="42" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="28" font-weight="bold" text-anchor="middle">译</text>
-  </g>
+  <rect width="512" height="512" rx="128" fill="#4F46E5" />
+  <text x="50%" y="53%" dominant-baseline="central" text-anchor="middle" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="300" font-weight="700">∑</text>
 </svg>

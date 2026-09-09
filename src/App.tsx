@@ -553,20 +553,13 @@ export function App() {
       {/* Top Navbar */}
       <header className="border-b bg-card/60 backdrop-blur sticky top-0 z-50 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <img
-            src="/logo.svg"
-            alt="PDFMathTranslate Web"
-            className="h-9 w-9 rounded-xl shadow-sm object-contain"
-          />
+          <div className="h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-lg shadow-sm select-none">
+            ∑
+          </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
-                PDFMathTranslate <span className="text-primary font-bold">Web</span>
-              </h1>
-              <span className="text-[10px] text-muted-foreground/80 bg-muted/60 border border-border/40 px-1.5 py-0.5 rounded-md font-mono hidden sm:inline-block">
-                by 朝代尾 (svefnz)
-              </span>
-            </div>
+            <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
+              PDF.lll.rest
+            </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
               基于 BabelDOC 的学术与公式保留专业 PDF 翻译系统
             </p>
