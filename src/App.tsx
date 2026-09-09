@@ -852,6 +852,22 @@ export function App() {
                     })}
                   </SelectContent>
                 </Select>
+
+                {/* Active Model Indicator */}
+                {!["Google", "Bing"].includes(engineType) && (
+                  <div className="flex items-center justify-between text-[11px] px-0.5 text-muted-foreground">
+                    <span className="truncate">
+                      当前调用模型：<code className="text-foreground font-mono bg-muted/60 px-1.5 py-0.5 rounded text-[10.5px]">{modelName || POPULAR_ENGINES.find((e) => e.id === engineType)?.defaultModel}</code>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSettingsOpen(true)}
+                      className="text-primary hover:underline shrink-0 ml-2 cursor-pointer"
+                    >
+                      修改
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Page Range Selection */}

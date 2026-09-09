@@ -300,19 +300,33 @@ export function SettingsDialog({
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-muted-foreground mb-1 block">API Base URL</Label>
+                      <Label className="text-[11px] text-muted-foreground mb-1 block">默认模型 (Model)</Label>
                       <Input
-                        placeholder="https://api.openai.com/v1"
-                        value={draft.baseUrls.OpenAI || ""}
+                        placeholder="gpt-4o-mini 或自定义模型"
+                        value={draft.modelNames.OpenAI || ""}
                         onChange={(e) =>
                           setDraft({
                             ...draft,
-                            baseUrls: { ...draft.baseUrls, OpenAI: e.target.value },
+                            modelNames: { ...draft.modelNames, OpenAI: e.target.value },
                           })
                         }
                         className="h-8 text-xs rounded-lg"
                       />
                     </div>
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-muted-foreground mb-1 block">API Base URL (留空默认官方)</Label>
+                    <Input
+                      placeholder="https://api.openai.com/v1 或兼容中转端点"
+                      value={draft.baseUrls.OpenAI || ""}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          baseUrls: { ...draft.baseUrls, OpenAI: e.target.value },
+                        })
+                      }
+                      className="h-8 text-xs rounded-lg font-mono"
+                    />
                   </div>
                 </div>
 
