@@ -1,10 +1,10 @@
 services:
   pdfmathtranslate-web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # 也可以直接拉取 GitHub Actions 自动构建的镜像:
-    # image: ghcr.io/svefnz/pdfmathtranslate-web:latest
+    image: ghcr.io/svefnz/pdfmathtranslate-web:latest
+    # 若需本地从源码重新编译，可取消下方 build 注释:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: pdfmathtranslate-web
     restart: unless-stopped
     ports:
