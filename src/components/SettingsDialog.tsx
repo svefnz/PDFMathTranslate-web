@@ -119,7 +119,7 @@ export function SettingsDialog({
                     <option value="DeepSeek">DeepSeek</option>
                     <option value="SiliconFlow">SiliconFlow API</option>
                     <option value="OpenAI">OpenAI</option>
-                    <option value="Ollama">Ollama - 本地免费</option>
+                    <option value="Ollama">Ollama - 本地</option>
                   </select>
                 </div>
 

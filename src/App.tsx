@@ -805,6 +805,8 @@ export function App() {
                               ) : (
                                 <span className="text-[10px] text-muted-foreground font-mono ml-2">已配置</span>
                               )
+                            ) : item.id === "Ollama" ? (
+                              <span className="text-[10px] text-sky-500 font-mono ml-2">本地</span>
                             ) : (
                               <span className="text-[10px] text-emerald-500 font-mono ml-2">免费</span>
                             )}
