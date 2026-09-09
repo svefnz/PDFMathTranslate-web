@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # 也可以直接拉取 GitHub Actions 自动构建的镜像（请替换为你的 GitHub 用户名）:
-    # image: ghcr.io/<your-github-username>/pdfmathtranslate-web:latest
+    # 也可以直接拉取 GitHub Actions 自动构建的镜像:
+    # image: ghcr.io/svefnz/pdfmathtranslate-web:latest
     container_name: pdfmathtranslate-web
     restart: unless-stopped
     ports:
