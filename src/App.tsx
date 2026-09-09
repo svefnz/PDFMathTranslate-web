@@ -18,6 +18,7 @@ import {
   Minimize2,
   LogOut,
   User,
+  Hand,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -552,9 +553,11 @@ export function App() {
       {/* Top Navbar */}
       <header className="border-b bg-card/60 backdrop-blur sticky top-0 z-50 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-lg shadow-sm">
-            ∑
-          </div>
+          <img
+            src="/logo.svg"
+            alt="PDFMathTranslate Web"
+            className="h-9 w-9 rounded-xl shadow-sm object-contain"
+          />
           <div>
             <div className="flex items-center gap-2">
               <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
@@ -1065,7 +1068,7 @@ export function App() {
       {!isWebFullscreen && (
         <footer className="py-4 border-t border-border/40 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5 shrink-0 bg-card/20">
           <span>Crafted with</span>
-          <span className="text-red-500">❤️</span>
+          <Hand className="w-3.5 h-3.5 text-amber-500 inline-block" />
           <span>by</span>
           <a
             href="https://github.com/svefnz"
