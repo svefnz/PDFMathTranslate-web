@@ -558,7 +558,7 @@ export function App() {
           </div>
           <div>
             <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
-              PDF.lll.rest
+              PDFMathTranslate <span className="text-primary font-bold">Web</span>
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
               基于 BabelDOC 的学术与公式保留专业 PDF 翻译系统
