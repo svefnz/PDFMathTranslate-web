@@ -270,6 +270,47 @@ export function SettingsDialog({
                   </div>
                 </div>
 
+                {/* Ollama */}
+                <div className="p-3 rounded-xl border bg-card/50 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">Ollama 本地私有化大模型</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">无需 API Key</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[11px] text-muted-foreground mb-1 block">服务地址 (Ollama Host)</Label>
+                      <Input
+                        placeholder="http://host.docker.internal:11434"
+                        value={draft.baseUrls.Ollama || ""}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            baseUrls: { ...draft.baseUrls, Ollama: e.target.value },
+                          })
+                        }
+                        className="h-8 text-xs rounded-lg font-mono"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[11px] text-muted-foreground mb-1 block">模型名称 (Model)</Label>
+                      <Input
+                        placeholder="qwen2.5:7b 或 llama3.2"
+                        value={draft.modelNames.Ollama || ""}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            modelNames: { ...draft.modelNames, Ollama: e.target.value },
+                          })
+                        }
+                        className="h-8 text-xs rounded-lg font-mono"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10.5px] text-muted-foreground leading-relaxed">
+                    💡 提示：Docker 部署访问宿主机 Ollama 时，请填写 <code className="text-primary font-mono font-medium">http://host.docker.internal:11434</code>，并确保宿主机已配置 <code className="font-mono font-medium">OLLAMA_HOST=0.0.0.0</code> 允许跨容器访问。
+                  </p>
+                </div>
+
                 {/* Global Thread Count */}
                 <div className="p-3 rounded-xl border bg-card/50 flex items-center justify-between">
                   <div>

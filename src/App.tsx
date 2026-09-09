@@ -70,8 +70,8 @@ const POPULAR_ENGINES = [
   { id: "DeepSeek", name: "DeepSeek", defaultModel: "deepseek-chat", needKey: true },
   { id: "SiliconFlow", name: "SiliconFlow (自填 API Key)", defaultModel: "Qwen/Qwen2.5-7B-Instruct", needKey: true },
   { id: "Ollama", name: "Ollama (本地私有化)", defaultModel: "qwen2.5", needKey: false },
-  { id: "Google", name: "Google Translate (免Key)", defaultModel: "", needKey: false },
-  { id: "Bing", name: "Bing (微软免费)", defaultModel: "", needKey: false },
+  { id: "Google", name: "Google Translate (免Key·需境外网络)", defaultModel: "", needKey: false },
+  { id: "Bing", name: "Bing (微软免费·易受风控)", defaultModel: "", needKey: false },
 ]
 
 const ENGINE_ITEMS: Record<string, string> = Object.fromEntries(
@@ -171,6 +171,7 @@ export function App() {
   // File state
   const [file, setFile] = useState<UploadedFileInfo | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -271,40 +272,61 @@ export function App() {
     }
     setErrorMsg(null)
     setIsUploading(true)
+    setUploadProgress(0)
 
     const formData = new FormData()
     formData.append("file", selectedFile)
 
     try {
-      const headers: Record<string, string> = {}
-      if (authToken) {
-        headers["Authorization"] = `Bearer ${authToken}`
-      }
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        headers,
-        body: formData,
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open("POST", "/api/upload")
+        if (authToken) {
+          xhr.setRequestHeader("Authorization", `Bearer ${authToken}`)
+        }
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            const percent = Math.min(100, Math.round((event.loaded / event.total) * 100))
+            setUploadProgress(percent)
+          }
+        }
+
+        xhr.onload = () => {
+          if (xhr.status === 401) {
+            setAuthRequired(true)
+            setLoginOpen(true)
+            reject(new Error("访问需要认证，请先登录"))
+            return
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText)
+              setFile({
+                fileId: data.file_id,
+                filename: data.filename,
+                size: data.size,
+                originalUrl: `/api/uploads/${data.file_id}`,
+              })
+              setResult(null)
+              setProgress(0)
+              setStage("")
+              setPreviewTab("original")
+              resolve()
+            } catch {
+              reject(new Error("解析服务器响应失败"))
+            }
+          } else {
+            reject(new Error("上传失败: " + xhr.responseText))
+          }
+        }
+
+        xhr.onerror = () => {
+          reject(new Error("网络连接异常，文件上传失败"))
+        }
+
+        xhr.send(formData)
       })
-      if (res.status === 401) {
-        setAuthRequired(true)
-        setLoginOpen(true)
-        throw new Error("访问需要认证，请先登录")
-      }
-      if (!res.ok) {
-        throw new Error("上传失败: " + (await res.text()))
-      }
-      const data = await res.json()
-      setFile({
-        fileId: data.file_id,
-        filename: data.filename,
-        size: data.size,
-        originalUrl: `/api/uploads/${data.file_id}`,
-      })
-      // Reset translation result and switch preview to original document
-      setResult(null)
-      setProgress(0)
-      setStage("")
-      setPreviewTab("original")
     } catch (err: any) {
       setErrorMsg(err.message || "上传出错")
     } finally {
@@ -358,9 +380,10 @@ export function App() {
     }
 
     try {
+      const isLlmEngine = !["Google", "Bing"].includes(engineType)
       const advancedSettings = {
         watermark_output_mode: settings.watermarkMode,
-        no_auto_extract_glossary: !settings.enableGlossary,
+        no_auto_extract_glossary: !settings.enableGlossary || !isLlmEngine,
         term_qps: settings.termQps,
         term_pool_max_workers: settings.termPoolWorkers,
         dual_translate_first: settings.dualTranslateFirst,
@@ -581,13 +604,13 @@ export function App() {
           </Button>
 
           <a
-            href="https://github.com/PDFMathTranslate-next/PDFMathTranslate-next"
+            href="https://github.com/svefnz/PDFMathTranslate-web"
             target="_blank"
             rel="noreferrer"
           >
             <Button variant="outline" size="sm" className="gap-1.5 rounded-full text-xs h-8">
               <GithubIcon className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">上游仓库</span>
+              <span className="hidden md:inline">GitHub</span>
               <ExternalLink className="w-3 h-3 text-muted-foreground" />
             </Button>
           </a>
@@ -641,9 +664,18 @@ export function App() {
                 }`}
               >
                 {isUploading ? (
-                  <div className="flex flex-col items-center gap-2 py-4">
-                    <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                    <span className="text-xs text-muted-foreground">正在上传解析 PDF...</span>
+                  <div className="flex flex-col items-center gap-3 py-3 w-full max-w-xs">
+                    <Loader2 className="w-7 h-7 animate-spin text-primary" />
+                    <div className="w-full flex items-center justify-between text-xs text-muted-foreground px-1">
+                      <span>{uploadProgress < 100 ? "正在上传 PDF 文件..." : "上传完成，正在解析文档..."}</span>
+                      <span className="font-mono font-semibold text-primary">{uploadProgress}%</span>
+                    </div>
+                    <div className="w-full bg-muted/60 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="bg-primary h-full transition-all duration-150 rounded-full"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
                   </div>
                 ) : file ? (
                   <div className="flex flex-col items-center gap-2 py-2">
