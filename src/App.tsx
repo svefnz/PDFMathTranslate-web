@@ -13,6 +13,8 @@ import {
   Sun,
   BookOpen,
   Loader2,
+  Maximize2,
+  Minimize2,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -26,6 +28,7 @@ interface UploadedFileInfo {
   fileId: string
   filename: string
   size: number
+  originalUrl?: string
 }
 
 interface TranslationResult {
@@ -117,8 +120,20 @@ export function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [result, setResult] = useState<TranslationResult | null>(null)
 
-  // Preview tab: dual | mono
-  const [previewTab, setPreviewTab] = useState<"dual" | "mono">("dual")
+  // Preview tab: dual | mono | original
+  const [previewTab, setPreviewTab] = useState<"dual" | "mono" | "original">("dual")
+  const [isWebFullscreen, setIsWebFullscreen] = useState(false)
+
+  // Listen for Escape key to exit web fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isWebFullscreen) {
+        setIsWebFullscreen(false)
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [isWebFullscreen])
 
   // Switch languages
   const handleSwapLang = () => {
@@ -170,11 +185,13 @@ export function App() {
         fileId: data.file_id,
         filename: data.filename,
         size: data.size,
+        originalUrl: `/api/uploads/${data.file_id}`,
       })
-      // Reset translation result
+      // Reset translation result and switch preview to original document
       setResult(null)
       setProgress(0)
       setStage("")
+      setPreviewTab("original")
     } catch (err: any) {
       setErrorMsg(err.message || "上传出错")
     } finally {
@@ -301,6 +318,7 @@ export function App() {
                     dualUrl: parsed.dual_url,
                     glossaryUrl: parsed.glossary_url,
                   })
+                  setPreviewTab("dual")
                   setIsTranslating(false)
                 } else if (currentEvent === "error") {
                   setErrorMsg(parsed.error || "翻译过程中发生错误")
@@ -331,6 +349,21 @@ export function App() {
     setIsTranslating(false)
     setStage("翻译已取消")
   }
+
+  const activePdfUrl =
+    previewTab === "dual" && result?.dualUrl
+      ? `${result.dualUrl}#view=FitH`
+      : previewTab === "mono" && result?.monoUrl
+      ? `${result.monoUrl}#view=FitH`
+      : previewTab === "original" && file?.originalUrl
+      ? `${file.originalUrl}#view=FitH`
+      : result?.dualUrl
+      ? `${result.dualUrl}#view=FitH`
+      : result?.monoUrl
+      ? `${result.monoUrl}#view=FitH`
+      : file?.originalUrl
+      ? `${file.originalUrl}#view=FitH`
+      : null
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans transition-colors">
@@ -695,52 +728,121 @@ export function App() {
           )}
         </div>
 
-        {/* Right Column: PDF Preview Workspace (7 cols) */}
-        <div className="lg:col-span-7 flex flex-col">
-          <Card className="flex-1 flex flex-col border shadow-sm overflow-hidden min-h-[560px]">
-            <CardHeader className="py-3 px-5 border-b flex flex-row items-center justify-between">
+        {/* Right Column: PDF Preview Workspace (7 cols or Web Fullscreen) */}
+        <div
+          className={
+            isWebFullscreen
+              ? "fixed inset-0 z-50 bg-background flex flex-col h-screen w-screen overflow-hidden animate-in fade-in-50 duration-200"
+              : "lg:col-span-7 flex flex-col"
+          }
+        >
+          <Card
+            className={
+              isWebFullscreen
+                ? "flex-1 flex flex-col border-0 rounded-none shadow-none h-full bg-background"
+                : "flex-1 flex flex-col border shadow-sm overflow-hidden min-h-[560px]"
+            }
+          >
+            <CardHeader className="py-2.5 px-4 border-b flex flex-row items-center justify-between shrink-0 bg-card/90 backdrop-blur z-10">
               <div className="flex items-center gap-2">
                 <FileText className="w-4 h-4 text-primary" />
-                <span className="text-sm font-medium">文档在线预览</span>
-                {result && (
-                  <Badge variant="secondary" className="text-[11px] rounded-full">
+                <span className="text-sm font-medium">
+                  {file ? file.filename : "文档在线预览"}
+                </span>
+                {result ? (
+                  <Badge variant="secondary" className="text-[10px] rounded-full px-2 py-0">
                     已就绪
+                  </Badge>
+                ) : file ? (
+                  <Badge variant="outline" className="text-[10px] rounded-full px-2 py-0">
+                    原始文档
+                  </Badge>
+                ) : null}
+                {isWebFullscreen && (
+                  <Badge variant="secondary" className="text-[10px] font-mono text-muted-foreground hidden sm:inline-flex">
+                    按 Esc 退出全屏
                   </Badge>
                 )}
               </div>
 
-              {result && (
-                <div className="flex items-center gap-1 bg-muted p-1 rounded-xl">
-                  <button
-                    onClick={() => setPreviewTab("dual")}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-                      previewTab === "dual"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
+              <div className="flex items-center gap-2">
+                {/* View Tabs */}
+                {(result || file) && (
+                  <div className="flex items-center gap-1 bg-muted p-0.5 rounded-lg text-xs">
+                    {result?.dualUrl && (
+                      <button
+                        onClick={() => setPreviewTab("dual")}
+                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                          previewTab === "dual"
+                            ? "bg-background text-foreground shadow-xs"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        双语对照
+                      </button>
+                    )}
+                    {result?.monoUrl && (
+                      <button
+                        onClick={() => setPreviewTab("mono")}
+                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                          previewTab === "mono"
+                            ? "bg-background text-foreground shadow-xs"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        单语译文
+                      </button>
+                    )}
+                    {file?.originalUrl && (
+                      <button
+                        onClick={() => setPreviewTab("original")}
+                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                          previewTab === "original"
+                            ? "bg-background text-foreground shadow-xs"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        原始文档
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Web Fullscreen Button */}
+                {(result || file) && (
+                  <Button
+                    variant={isWebFullscreen ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setIsWebFullscreen(!isWebFullscreen)}
+                    className="h-8 px-2.5 text-xs rounded-lg gap-1 font-medium transition-colors"
+                    title={isWebFullscreen ? "退出网页全屏 (Esc)" : "网页内部全屏"}
                   >
-                    双语对照
-                  </button>
-                  <button
-                    onClick={() => setPreviewTab("mono")}
-                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-                      previewTab === "mono"
-                        ? "bg-background text-foreground shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    单语译文
-                  </button>
-                </div>
-              )}
+                    {isWebFullscreen ? (
+                      <>
+                        <Minimize2 className="w-3.5 h-3.5" />
+                        <span>退出全屏</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5" />
+                        <span>网页全屏</span>
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
             </CardHeader>
 
-            <CardContent className="p-0 flex-1 flex flex-col bg-muted/20 relative">
-              {result ? (
+            <CardContent className="p-0 flex-1 flex flex-col bg-muted/20 relative overflow-hidden">
+              {activePdfUrl ? (
                 <iframe
-                  key={previewTab}
-                  src={previewTab === "dual" ? result.dualUrl || "" : result.monoUrl || ""}
-                  className="w-full flex-1 border-0 rounded-b-2xl h-[calc(100vh-180px)] min-h-[580px]"
+                  key={`${previewTab}-${activePdfUrl}`}
+                  src={activePdfUrl}
+                  className={`w-full flex-1 border-0 ${
+                    isWebFullscreen
+                      ? "h-[calc(100vh-53px)]"
+                      : "rounded-b-2xl h-[calc(100vh-180px)] min-h-[580px]"
+                  }`}
                   title="PDF Preview"
                 />
               ) : (
@@ -750,7 +852,7 @@ export function App() {
                   </div>
                   <h3 className="text-sm font-medium text-foreground">暂无预览内容</h3>
                   <p className="text-xs text-muted-foreground max-w-sm mt-1">
-                    在左侧上传 PDF 并点击“开始智能翻译”，完成后即可在此处全屏对照阅读译文。
+                    在左侧上传 PDF 并点击“开始智能翻译”，即可在此处实时对照阅读，并支持网页内部全屏展开浏览。
                   </p>
                 </div>
               )}

@@ -216,6 +216,21 @@ async def get_translated_file(session_id: str, filename: str):
     )
 
 
+@app.get("/api/uploads/{file_id}")
+async def get_uploaded_file(file_id: str):
+    """Serves the uploaded original PDF for inline preview"""
+    file_path = UPLOAD_DIR / file_id
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=file_path.name,
+        content_disposition_type="inline",
+    )
+
+
 # Serve built frontend SPA if dist/ exists
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
