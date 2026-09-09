@@ -61,6 +61,7 @@ class TranslationRequest(BaseModel):
     engine_type: str = "OpenAI"
     engine_config: dict[str, Any] = Field(default_factory=dict)
     thread_count: int | None = None
+    pages: str | None = None
 
 
 @app.get("/api/health")
@@ -123,6 +124,7 @@ async def stream_translation(req: TranslationRequest):
             engine_config=req.engine_config,
             output_dir=session_output_dir,
             thread_count=req.thread_count,
+            pages=req.pages,
         )
     except Exception as e:
         logger.error(f"Failed to build translation settings: {e}")

@@ -70,6 +70,7 @@ class TranslationAdapter:
         engine_config: dict[str, Any],
         output_dir: Path,
         thread_count: int | None = None,
+        pages: str | None = None,
     ) -> SettingsModel:
         """
         Constructs and validates the SettingsModel required by BabelDOC / pdf2zh_next.
@@ -88,6 +89,9 @@ class TranslationAdapter:
 
         if thread_count:
             settings.translation.thread = thread_count
+
+        if pages and pages.strip():
+            settings.pdf.pages = pages.strip()
 
         metadata = TRANSLATION_ENGINE_METADATA_MAP.get(engine_type)
         if not metadata:

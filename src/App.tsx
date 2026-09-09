@@ -65,6 +65,22 @@ function GithubIcon({ className }: { className?: string }) {
   )
 }
 
+const STAGE_NAME_MAP: Record<string, string> = {
+  "Parse PDF and Create Intermediate Representation": "解析 PDF 结构与页面对象",
+  "DetectScannedFile": "检测文档格式（扫描件/电子版）",
+  "Parse Page Layout": "版面视觉分析 (DocLayout YOLO 提取)",
+  "Parse Table": "表格结构识别与解析",
+  "Parse Paragraphs": "提取并合并段落文本",
+  "Parse Formulas and Styles": "数学公式与排版样式提取",
+  "Automatic Term Extraction": "提取并统一专业学术术语",
+  "Translate Paragraphs": "大模型正文翻译中",
+  "Typesetting": "双语/单语排版与文字重构",
+  "Add Fonts": "嵌入高保真中文字体",
+  "Generate drawing instructions": "生成高精度渲染指令",
+  "Subset font": "子集精简字体体积",
+  "Save PDF": "生成并保存输出文档",
+}
+
 export function App() {
   // Dark mode
   const [isDark, setIsDark] = useState(false)
@@ -90,6 +106,7 @@ export function App() {
   const [baseUrl, setBaseUrl] = useState("")
   const [modelName, setModelName] = useState("Qwen/Qwen2.5-7B-Instruct")
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [pageRange, setPageRange] = useState("")
 
   // Translation execution state
   const [isTranslating, setIsTranslating] = useState(false)
@@ -183,8 +200,8 @@ export function App() {
     setErrorMsg(null)
     setIsTranslating(true)
     setProgress(1)
-    setStage("正在初始化翻译任务...")
-    setStageDetail("")
+    setStage("正在初始化视觉模型与解析文档...")
+    setStageDetail("首次分析或多页文档版面提取耗时稍长，请耐心稍候")
     setResult(null)
 
     // Build engine config
@@ -207,16 +224,21 @@ export function App() {
     }
 
     try {
+      const requestPayload: Record<string, any> = {
+        file_id: file.fileId,
+        lang_in: langIn,
+        lang_out: langOut,
+        engine_type: engineType,
+        engine_config: engineConfig,
+      }
+      if (pageRange.trim()) {
+        requestPayload.pages = pageRange.trim()
+      }
+
       const response = await fetch("/api/translate/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_id: file.fileId,
-          lang_in: langIn,
-          lang_out: langOut,
-          engine_type: engineType,
-          engine_config: engineConfig,
-        }),
+        body: JSON.stringify(requestPayload),
       })
 
       if (!response.ok) {
@@ -260,11 +282,15 @@ export function App() {
                 if (currentEvent === "session") {
                   setSessionId(parsed.session_id)
                 } else if (currentEvent === "progress") {
+                  const rawStage = parsed.stage || ""
+                  const translatedStage = STAGE_NAME_MAP[rawStage] || rawStage || "正在翻译..."
                   setProgress(Math.round(parsed.progress || 0))
-                  setStage(parsed.stage || "正在翻译...")
+                  setStage(translatedStage)
                   if (parsed.stage_total > 0) {
                     setStageDetail(
-                      `Part ${parsed.part_index}/${parsed.total_parts} | 进度: ${parsed.stage_current}/${parsed.stage_total}`
+                      `阶段进度: ${parsed.stage_current}/${parsed.stage_total}${
+                        parsed.total_parts > 1 ? ` (Part ${parsed.part_index}/${parsed.total_parts})` : ""
+                      }`
                     )
                   }
                 } else if (currentEvent === "finish") {
@@ -550,6 +576,20 @@ export function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Page Range Selection */}
+                <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium text-foreground">页码范围（选填）</Label>
+                    <span className="text-[10px] text-muted-foreground font-mono">留空则翻译全书</span>
+                  </div>
+                  <Input
+                    placeholder="例: 1-3 或 1,2,5 (推荐多页大文档测试使用)"
+                    value={pageRange}
+                    onChange={(e) => setPageRange(e.target.value)}
+                    className="rounded-lg text-xs h-8 bg-background"
+                  />
+                </div>
               </div>
 
               {/* Action Buttons */}
