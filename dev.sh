@@ -43,9 +43,14 @@ else
     python -m pip install -r backend/requirements.txt -e ./upstream-core
 fi
 
-# 4. 启动后端 (后台运行)
-echo "🚀 正在启动 FastAPI 后端服务 (http://localhost:8765)..."
-python -m uvicorn backend.app:app --host 0.0.0.0 --port 8765 --reload &
+# 4. 获取随机空闲端口，彻底杜绝端口冲突
+BACKEND_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+FRONTEND_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
+export BACKEND_PORT
+
+# 5. 启动后端 (后台运行)
+echo "🚀 正在启动 FastAPI 后端服务 (http://localhost:$BACKEND_PORT)..."
+python -m uvicorn backend.app:app --host 0.0.0.0 --port $BACKEND_PORT --reload &
 BACKEND_PID=$!
 
 cleanup() {
@@ -55,14 +60,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# 5. 启动前端
-echo "🎨 正在启动 Vite 前端开发服务器 (http://localhost:5173)..."
+# 6. 启动前端
+echo "🎨 正在启动 Vite 前端开发服务器 (http://localhost:$FRONTEND_PORT)..."
 if command -v bun >/dev/null 2>&1; then
-    bun run dev --host
+    bun run dev --host --port $FRONTEND_PORT
 elif command -v pnpm >/dev/null 2>&1; then
-    pnpm run dev --host
+    pnpm run dev --host --port $FRONTEND_PORT
 elif command -v npm >/dev/null 2>&1; then
-    npm run dev -- --host
+    npm run dev -- --host --port $FRONTEND_PORT
 else
     echo "❌ 错误: 未检测到 bun / pnpm / npm 前端工具，请安装 Node/Bun！"
     exit 1

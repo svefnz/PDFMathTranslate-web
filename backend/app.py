@@ -220,6 +220,8 @@ if FRONTEND_DIST.exists():
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    port = int(os.environ.get("BACKEND_PORT", 8765))
+    uvicorn.run(app, host="0.0.0.0", port=port)
