@@ -191,6 +191,11 @@ PDFMathTranslate-web/
 └── dev.sh                        # 本地动态随机端口开发启动脚本
 ```
 
+## 👨‍💻 作者与维护者
+
+- **维护者 (Maintainer)**: **朝代尾 ([@svefnz](https://github.com/svefnz))**
+- **开源主页**: [https://github.com/svefnz/PDFMathTranslate-web](https://github.com/svefnz/PDFMathTranslate-web)
+
 ---
 
 ## 📄 开源许可证

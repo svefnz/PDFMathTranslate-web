@@ -556,9 +556,14 @@ export function App() {
             ∑
           </div>
           <div>
-            <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
-              PDFMathTranslate <span className="text-primary font-bold">Web</span>
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="font-heading font-semibold text-base leading-none tracking-tight">
+                PDFMathTranslate <span className="text-primary font-bold">Web</span>
+              </h1>
+              <span className="text-[10px] text-muted-foreground/80 bg-muted/60 border border-border/40 px-1.5 py-0.5 rounded-md font-mono hidden sm:inline-block">
+                by 朝代尾 (svefnz)
+              </span>
+            </div>
             <p className="text-xs text-muted-foreground mt-0.5">
               基于 BabelDOC 的学术与公式保留专业 PDF 翻译系统
             </p>
@@ -1055,6 +1060,23 @@ export function App() {
           </Card>
         </div>
       </main>
+
+      {/* Page Footer */}
+      {!isWebFullscreen && (
+        <footer className="py-4 border-t border-border/40 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5 shrink-0 bg-card/20">
+          <span>Crafted with</span>
+          <span className="text-red-500">❤️</span>
+          <span>by</span>
+          <a
+            href="https://github.com/svefnz"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-foreground hover:text-primary transition-colors underline-offset-4 hover:underline"
+          >
+            朝代尾 (svefnz)
+          </a>
+        </footer>
+      )}
 
       {/* Global Settings Dialog */}
       <SettingsDialog

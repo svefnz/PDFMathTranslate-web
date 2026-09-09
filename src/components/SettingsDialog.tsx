@@ -595,6 +595,10 @@ export function SettingsDialog({
             <span>恢复默认</span>
           </Button>
 
+          <span className="text-[11px] text-muted-foreground hidden sm:inline-block font-mono">
+            Maintainer: <span className="font-semibold text-foreground">朝代尾 (svefnz)</span>
+          </span>
+
           <div className="flex items-center gap-2">
             <Button
               type="button"

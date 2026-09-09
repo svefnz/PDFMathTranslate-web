@@ -2,6 +2,7 @@
   "name": "PDFMathTranslate-web",
   "private": true,
   "version": "0.0.1",
+  "author": "朝代尾 (svefnz) <https://github.com/svefnz>",
   "type": "module",
   "scripts": {
     "dev": "vite",
