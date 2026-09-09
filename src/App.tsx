@@ -16,6 +16,8 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  LogOut,
+  User,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -33,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { SettingsDialog } from "@/components/SettingsDialog"
+import { LoginDialog } from "@/components/LoginDialog"
 import { type AppSettings, loadSettings, saveSettings } from "@/types/settings"
 
 interface UploadedFileInfo {
@@ -109,6 +112,61 @@ export function App() {
       document.documentElement.classList.remove("dark")
     }
   }, [isDark])
+
+  // User Authentication state
+  const [authRequired, setAuthRequired] = useState(false)
+  const [currentUser, setCurrentUser] = useState<string | null>(null)
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem("pdf_auth_token"))
+  const [loginOpen, setLoginOpen] = useState(false)
+
+  // Verify auth on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const token = localStorage.getItem("pdf_auth_token")
+        const headers: Record<string, string> = {}
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`
+        }
+        const res = await fetch("/api/auth/status", { headers })
+        if (res.ok) {
+          const data = await res.json()
+          setAuthRequired(Boolean(data.auth_required))
+          if (data.auth_required) {
+            if (data.logged_in && data.username) {
+              setCurrentUser(data.username)
+              setLoginOpen(false)
+            } else {
+              setCurrentUser(null)
+              setLoginOpen(true)
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to check auth status:", err)
+      }
+    }
+    checkAuth()
+  }, [])
+
+  const handleLoginSuccess = (token: string, username: string) => {
+    localStorage.setItem("pdf_auth_token", token)
+    setAuthToken(token)
+    setCurrentUser(username)
+    setLoginOpen(false)
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" })
+    } catch {}
+    localStorage.removeItem("pdf_auth_token")
+    setAuthToken(null)
+    setCurrentUser(null)
+    if (authRequired) {
+      setLoginOpen(true)
+    }
+  }
 
   // File state
   const [file, setFile] = useState<UploadedFileInfo | null>(null)
@@ -218,10 +276,20 @@ export function App() {
     formData.append("file", selectedFile)
 
     try {
+      const headers: Record<string, string> = {}
+      if (authToken) {
+        headers["Authorization"] = `Bearer ${authToken}`
+      }
       const res = await fetch("/api/upload", {
         method: "POST",
+        headers,
         body: formData,
       })
+      if (res.status === 401) {
+        setAuthRequired(true)
+        setLoginOpen(true)
+        throw new Error("访问需要认证，请先登录")
+      }
       if (!res.ok) {
         throw new Error("上传失败: " + (await res.text()))
       }
@@ -317,11 +385,24 @@ export function App() {
         requestPayload.pages = pageRange.trim()
       }
 
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      if (authToken) {
+        headers["Authorization"] = `Bearer ${authToken}`
+      }
+
       const response = await fetch("/api/translate/stream", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(requestPayload),
       })
+
+      if (response.status === 401) {
+        setAuthRequired(true)
+        setLoginOpen(true)
+        setErrorMsg("认证已过期，请重新登录")
+        setIsTranslating(false)
+        return
+      }
 
       if (!response.ok) {
         let errDetail = response.statusText
@@ -406,7 +487,11 @@ export function App() {
   const handleCancelTranslate = async () => {
     if (sessionId) {
       try {
-        await fetch(`/api/cancel/${sessionId}`, { method: "POST" })
+        const headers: Record<string, string> = {}
+        if (authToken) {
+          headers["Authorization"] = `Bearer ${authToken}`
+        }
+        await fetch(`/api/cancel/${sessionId}`, { method: "POST", headers })
       } catch (e) {
         console.error(e)
       }
@@ -449,6 +534,22 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* User Auth Badge & Logout (if authRequired) */}
+          {authRequired && currentUser && (
+            <div className="flex items-center gap-1.5 bg-muted/60 rounded-full px-2.5 py-1 text-xs text-muted-foreground border">
+              <User className="w-3.5 h-3.5 text-primary" />
+              <span className="font-medium text-foreground max-w-[100px] truncate">{currentUser}</span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="hover:text-destructive text-muted-foreground ml-1 transition-colors cursor-pointer"
+                title="退出登录"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Settings Center Button */}
           <Button
             variant="outline"
@@ -920,6 +1021,12 @@ export function App() {
         onOpenChange={setSettingsOpen}
         settings={settings}
         onSave={handleSaveSettings}
+      />
+
+      {/* User Login Authentication Dialog */}
+      <LoginDialog
+        open={loginOpen}
+        onSuccess={handleLoginSuccess}
       />
     </div>
   )

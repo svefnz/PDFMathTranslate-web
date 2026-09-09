@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -65,9 +69,162 @@ class TranslationRequest(BaseModel):
     advanced_settings: dict[str, Any] = Field(default_factory=dict)
 
 
+# Authentication setup
+SECRET_FILE = BASE_DIR / "data" / ".auth_secret"
+if SECRET_FILE.exists():
+    SERVER_SECRET = SECRET_FILE.read_text(encoding="utf-8").strip()
+else:
+    SERVER_SECRET = secrets.token_hex(32)
+    try:
+        SECRET_FILE.write_text(SERVER_SECRET, encoding="utf-8")
+    except Exception:
+        pass
+
+TOKEN_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+
+def load_auth_users() -> dict[str, str]:
+    """
+    Loads allowed users and passwords from:
+    1. Environment variable AUTH_USERS (format: "user1:pass1,user2:pass2" or "user1,pass1;user2,pass2")
+    2. File specified by AUTH_FILE or default "data/auth.txt"
+    Returns a dict mapping username -> password.
+    """
+    users: dict[str, str] = {}
+    env_users = os.environ.get("AUTH_USERS", "").strip()
+    if env_users:
+        entries = [e.strip() for e in env_users.replace(";", ",").split(",") if e.strip()]
+        for entry in entries:
+            if ":" in entry:
+                u, p = entry.split(":", 1)
+                users[u.strip()] = p.strip()
+            elif "," in entry:
+                u, p = entry.split(",", 1)
+                users[u.strip()] = p.strip()
+
+    auth_file_path = os.environ.get("AUTH_FILE", "").strip()
+    auth_path = Path(auth_file_path) if auth_file_path else (BASE_DIR / "data" / "auth.txt")
+    if auth_path.exists() and auth_path.is_file():
+        try:
+            lines = auth_path.read_text(encoding="utf-8").splitlines()
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "," in line:
+                    u, p = line.split(",", 1)
+                    users[u.strip()] = p.strip()
+                elif ":" in line:
+                    u, p = line.split(":", 1)
+                    users[u.strip()] = p.strip()
+        except Exception as e:
+            logger.error(f"Error reading auth file {auth_path}: {e}")
+
+    return users
+
+
+def create_token(username: str) -> str:
+    expiry = int(time.time()) + TOKEN_TTL_SECONDS
+    payload = f"{username}:{expiry}"
+    sig = hmac.new(SERVER_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def verify_token(token: str | None) -> str | None:
+    """Returns username if valid, None otherwise."""
+    if not token:
+        return None
+    parts = token.strip().split(":")
+    if len(parts) != 3:
+        return None
+    username, expiry_str, sig = parts
+    try:
+        expiry = int(expiry_str)
+    except ValueError:
+        return None
+    if time.time() > expiry:
+        return None
+    payload = f"{username}:{expiry}"
+    expected_sig = hmac.new(SERVER_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+    return username
+
+
+def get_current_user(
+    authorization: str | None = Header(None),
+    token: str | None = Query(None),
+) -> str | None:
+    users = load_auth_users()
+    if not users:
+        # Auth is not enabled, allow all
+        return None
+
+    extracted_token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        extracted_token = authorization[7:].strip()
+    elif token:
+        extracted_token = token.strip()
+
+    username = verify_token(extracted_token)
+    if not username or username not in users:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return username
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "service": "PDFMathTranslate-web"}
+
+
+@app.get("/api/auth/status")
+async def get_auth_status(
+    authorization: str | None = Header(None),
+    token: str | None = Query(None),
+):
+    users = load_auth_users()
+    if not users:
+        return {"auth_required": False, "logged_in": True, "username": None}
+
+    extracted_token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        extracted_token = authorization[7:].strip()
+    elif token:
+        extracted_token = token.strip()
+
+    username = verify_token(extracted_token)
+    if username and username in users:
+        return {"auth_required": True, "logged_in": True, "username": username}
+
+    return {"auth_required": True, "logged_in": False, "username": None}
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    users = load_auth_users()
+    if not users:
+        return {"token": "no_auth", "username": "admin"}
+
+    expected_pwd = users.get(req.username.strip())
+    if not expected_pwd or not hmac.compare_digest(expected_pwd, req.password):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    token = create_token(req.username.strip())
+    return {"token": token, "username": req.username.strip()}
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    return {"status": "ok"}
 
 
 @app.get("/api/config/engines")
@@ -82,7 +239,10 @@ async def get_engines():
 
 
 @app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    _user: str | None = Depends(get_current_user),
+):
     """Uploads a PDF file and returns a unique file_id"""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
@@ -105,7 +265,10 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/api/translate/stream")
-async def stream_translation(req: TranslationRequest):
+async def stream_translation(
+    req: TranslationRequest,
+    _user: str | None = Depends(get_current_user),
+):
     """
     Initiates translation and streams progress/results via Server-Sent Events (SSE).
     """
@@ -191,7 +354,10 @@ async def stream_translation(req: TranslationRequest):
 
 
 @app.post("/api/cancel/{session_id}")
-async def cancel_translation(session_id: str):
+async def cancel_translation(
+    session_id: str,
+    _user: str | None = Depends(get_current_user),
+):
     """Cancels an ongoing translation task"""
     task = active_tasks.get(session_id)
     if not task:

@@ -14,8 +14,12 @@ services:
       - ./data:/app/data
       # 持久化字体与模型缓存，避免重复下载
       - babeldoc-cache:/root/.cache/babeldoc
+      # 方式 1：挂载用户认证文件（兼容上游 auth.txt 格式：admin,password123）
+      # - ./data/auth.txt:/app/data/auth.txt
     environment:
       - PYTHONUNBUFFERED=1
+      # 方式 2：或者直接通过环境变量配置用户名和密码（多个用户用逗号或分号分隔）
+      # - AUTH_USERS=admin:password123,guest:guest123
 
 volumes:
   babeldoc-cache:

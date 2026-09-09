@@ -1,0 +1,6 @@
+# PDFMathTranslate-web 用户认证配置文件 (兼容上游格式)
+# 每行一个用户，格式为：用户名,密码 或 用户名:密码
+# 以 # 开头的行为注释
+
+admin,admin123456
+user1,password123
