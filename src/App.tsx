@@ -350,6 +350,33 @@ export function App() {
       return
     }
 
+    if (engineType === "Ollama") {
+      const ollamaHost = baseUrl || settings.baseUrls.Ollama || "http://localhost:11434"
+      setIsTranslating(true)
+      setProgress(1)
+      setStage("正在检测本地 Ollama 连通性...")
+      setStageDetail(`正在连接 ${ollamaHost} 并检查可用模型`)
+      try {
+        const checkRes = await fetch("/api/check/ollama", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host: ollamaHost }),
+        })
+        const checkData = await checkRes.json()
+        if (!checkData.ok) {
+          setErrorMsg(`Ollama 连通性检测失败：${checkData.error || "服务不可达，请确认已启动"}`)
+          setIsTranslating(false)
+          setProgress(0)
+          return
+        }
+      } catch (err: any) {
+        setErrorMsg(`无法连接到 Ollama 服务：${err.message || err}`)
+        setIsTranslating(false)
+        setProgress(0)
+        return
+      }
+    }
+
     setErrorMsg(null)
     setIsTranslating(true)
     setProgress(1)
@@ -771,6 +798,15 @@ export function App() {
                     >
                       <AlertCircle className="w-3 h-3 inline" />
                       <span>未配置 Key，点击去设置</span>
+                    </button>
+                  ) : engineType === "Ollama" ? (
+                    <button
+                      type="button"
+                      onClick={() => setSettingsOpen(true)}
+                      className="text-[11px] text-sky-500 hover:text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      <Settings2 className="w-3 h-3 inline" />
+                      <span>需本地运行，点击配置与测试</span>
                     </button>
                   ) : (
                     <button

@@ -238,6 +238,34 @@ async def get_engines():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class CheckOllamaRequest(BaseModel):
+    host: str = "http://localhost:11434"
+
+
+@app.post("/api/check/ollama")
+async def check_ollama(req: CheckOllamaRequest):
+    """Checks whether Ollama is reachable and returns installed models"""
+    import httpx
+
+    host = req.host.strip().rstrip("/") if req.host else "http://localhost:11434"
+    if not host.startswith("http://") and not host.startswith("https://"):
+        host = f"http://{host}"
+
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            res = await client.get(f"{host}/api/tags")
+            if res.status_code == 200:
+                data = res.json()
+                models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+                return {"ok": True, "models": models}
+            return {"ok": False, "error": f"Ollama 响应异常 (HTTP {res.status_code})"}
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"无法连接到 Ollama 服务 ({type(e).__name__})。请确认已启动且地址正确 (Docker 容器请使用 http://host.docker.internal:11434)",
+        }
+
+
 @app.post("/api/upload")
 async def upload_pdf(
     file: UploadFile = File(...),

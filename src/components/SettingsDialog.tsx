@@ -7,6 +7,9 @@ import {
   RotateCcw,
   Check,
   ShieldCheck,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react"
 
 import {
@@ -41,13 +44,56 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const [draft, setDraft] = useState<AppSettings>(settings)
   const [activeTab, setActiveTab] = useState("engines")
+  const [checkingOllama, setCheckingOllama] = useState(false)
+  const [ollamaResult, setOllamaResult] = useState<{
+    tested: boolean
+    ok: boolean
+    msg: string
+    models?: string[]
+  } | null>(null)
 
   // Sync draft when opened
   useEffect(() => {
     if (open) {
       setDraft(settings)
+      setOllamaResult(null)
     }
   }, [open, settings])
+
+  const handleTestOllama = async () => {
+    setCheckingOllama(true)
+    setOllamaResult(null)
+    try {
+      const res = await fetch("/api/check/ollama", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host: draft.baseUrls.Ollama || "http://localhost:11434" }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setOllamaResult({
+          tested: true,
+          ok: true,
+          msg: `连接成功！已检测到 ${data.models?.length || 0} 个本地模型`,
+          models: data.models || [],
+        })
+      } else {
+        setOllamaResult({
+          tested: true,
+          ok: false,
+          msg: data.error || "连接失败",
+        })
+      }
+    } catch (e: any) {
+      setOllamaResult({
+        tested: true,
+        ok: false,
+        msg: `请求出错: ${e.message || e}`,
+      })
+    } finally {
+      setCheckingOllama(false)
+    }
+  }
 
   const handleResetDefaults = () => {
     if (confirm("确定要恢复默认设置吗？已保存的 API Key 将被清空。")) {
@@ -271,23 +317,44 @@ export function SettingsDialog({
                 </div>
 
                 {/* Ollama */}
-                <div className="p-3 rounded-xl border bg-card/50 space-y-2">
+                <div className="p-3 rounded-xl border bg-card/50 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">Ollama 本地私有化大模型</span>
-                    <span className="text-[10px] text-muted-foreground font-mono">无需 API Key</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium">Ollama 本地私有化大模型</span>
+                      <Badge variant="outline" className="text-[10px] text-sky-500 border-sky-500/20 bg-sky-500/5">
+                        本地运行
+                      </Badge>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={checkingOllama}
+                      onClick={handleTestOllama}
+                      className="h-6 text-[11px] px-2 rounded-lg gap-1 border-border/80 hover:bg-muted/80 cursor-pointer"
+                    >
+                      {checkingOllama ? (
+                        <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                      ) : (
+                        <CheckCircle2 className="w-3 h-3 text-sky-500" />
+                      )}
+                      <span>{checkingOllama ? "检测中..." : "测试连接"}</span>
+                    </Button>
                   </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div>
                       <Label className="text-[11px] text-muted-foreground mb-1 block">服务地址 (Ollama Host)</Label>
                       <Input
                         placeholder="http://host.docker.internal:11434"
                         value={draft.baseUrls.Ollama || ""}
-                        onChange={(e) =>
+                        onChange={(e) => {
                           setDraft({
                             ...draft,
                             baseUrls: { ...draft.baseUrls, Ollama: e.target.value },
                           })
-                        }
+                          setOllamaResult(null)
+                        }}
                         className="h-8 text-xs rounded-lg font-mono"
                       />
                     </div>
@@ -306,6 +373,50 @@ export function SettingsDialog({
                       />
                     </div>
                   </div>
+
+                  {ollamaResult && (
+                    <div
+                      className={`p-2 rounded-lg text-xs space-y-1.5 border ${
+                        ollamaResult.ok
+                          ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                          : "bg-destructive/10 border-destructive/20 text-destructive"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 font-medium">
+                        {ollamaResult.ok ? (
+                          <Check className="w-3.5 h-3.5 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        )}
+                        <span>{ollamaResult.msg}</span>
+                      </div>
+                      {ollamaResult.ok && ollamaResult.models && ollamaResult.models.length > 0 && (
+                        <div className="flex flex-wrap gap-1 items-center pt-0.5">
+                          <span className="text-[10.5px] text-muted-foreground">已安装模型(点击填入):</span>
+                          {ollamaResult.models.map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() =>
+                                setDraft({
+                                  ...draft,
+                                  modelNames: { ...draft.modelNames, Ollama: m },
+                                })
+                              }
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${
+                                draft.modelNames.Ollama === m
+                                  ? "bg-emerald-600 text-white border-emerald-600"
+                                  : "bg-background/80 text-foreground border-border hover:border-emerald-500"
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <p className="text-[10.5px] text-muted-foreground leading-relaxed">
                     💡 提示：Docker 部署访问宿主机 Ollama 时，请填写 <code className="text-primary font-mono font-medium">http://host.docker.internal:11434</code>，并确保宿主机已配置 <code className="font-mono font-medium">OLLAMA_HOST=0.0.0.0</code> 允许跨容器访问。
                   </p>
