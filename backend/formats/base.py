@@ -30,6 +30,7 @@ import codecs
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, Sequence
@@ -56,6 +57,34 @@ def needs_translation(text: str | None) -> bool:
 class Slot(Protocol):
     def get(self) -> str | None: ...
     def set(self, text: str) -> None: ...
+
+
+class BatchTranslationError(RuntimeError):
+    """The translation engine itself failed (network / auth / quota / rate limit).
+
+    Deliberately distinct from "the model replied with something unusable":
+    that case is worth retrying in smaller pieces, a dead engine is not.
+    """
+
+
+def describe_engine_error(exc: BaseException) -> str:
+    """Turn an opaque SDK exception into something a user can act on."""
+    name = type(exc).__name__
+    text = str(exc)
+    lowered = text.lower()
+    if "429" in text or "ratelimit" in name.lower() or "rate limit" in lowered or "quota" in lowered:
+        hint = "（接口限流或额度不足：请检查 API Key 的余额/速率限制，或换用其他引擎）"
+    elif "401" in text or "authentication" in name.lower() or "invalid_api_key" in lowered:
+        hint = "（API Key 无效或已过期）"
+    elif "403" in text or "permission" in lowered:
+        hint = "（API Key 无该模型权限）"
+    elif "timeout" in lowered or "timeout" in name.lower():
+        hint = "（接口超时：可调低并发或稍后重试）"
+    elif "connection" in lowered or "connect" in name.lower():
+        hint = "（无法连接接口：请检查网络或 Base URL）"
+    else:
+        hint = ""
+    return f"大模型接口调用失败：{name}: {text[:300]}{hint}"
 
 
 class StringSlot:
@@ -258,11 +287,17 @@ class SegmentTranslator:
         lang_out: str,
         llm_capable: bool,
         glossary: str = "",
+        batch_timeout: float | None = None,
     ) -> None:
         self._translator = translator
         self._lang_out = lang_out
         self._llm_capable = llm_capable
         self._glossary = glossary
+        # The SDK retries a rate-limited engine for a very long time. Without a
+        # ceiling of our own, one stalled batch freezes the whole document.
+        # ponytail: the abandoned worker thread keeps running until the SDK gives
+        # up (it cannot be killed); acceptable because a timeout aborts the job.
+        self._batch_timeout = batch_timeout if batch_timeout and batch_timeout > 0 else None
 
     @property
     def llm_capable(self) -> bool:
@@ -284,20 +319,44 @@ class SegmentTranslator:
             .replace("__PAYLOAD__", json.dumps(list(batch), ensure_ascii=False))
         )
 
+    async def _call(self, func: Callable[..., Any], *args: Any) -> Any:
+        """Run a blocking engine call in a thread, optionally bounded in time."""
+        call = asyncio.to_thread(func, *args)
+        if self._batch_timeout is None:
+            return await call
+        try:
+            return await asyncio.wait_for(call, timeout=self._batch_timeout)
+        except asyncio.TimeoutError as exc:
+            raise BatchTranslationError(
+                f"大模型接口在 {self._batch_timeout:.0f} 秒内没有返回"
+                "（接口限流、排队或网络问题）。请稍后重试或改用其他引擎。"
+            ) from exc
+
     async def _translate_batch(self, batch: Sequence[str], depth: int = 0) -> list[str]:
         if self._llm_capable:
             try:
-                raw = await asyncio.to_thread(self._llm_request, self._build_prompt(batch))
-                parsed = _parse_json_array(raw, len(batch))
-                if parsed is not None:
-                    return parsed
-                logger.warning(
-                    "Batch JSON reply unusable (size=%d, depth=%d); falling back",
-                    len(batch),
-                    depth,
-                )
-            except Exception as exc:  # noqa: BLE001 - any engine error -> fallback
-                logger.warning("Batch translation failed (size=%d): %s", len(batch), exc)
+                raw = await self._call(self._llm_request, self._build_prompt(batch))
+            except BatchTranslationError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # The *engine* failed: network, auth, quota, rate limit. The SDK
+                # and tenacity have already retried this request hard, so
+                # splitting the batch would only multiply the same failing call
+                # (one 429 batch would become thousands). Fail fast instead, with
+                # a message that says what the user can actually do.
+                raise BatchTranslationError(describe_engine_error(exc)) from exc
+
+            parsed = _parse_json_array(raw, len(batch))
+            if parsed is not None:
+                return parsed
+            # The model answered, we just could not use the shape of the reply.
+            # Splitting is the right move here: smaller batches are easier for a
+            # model to keep in JSON order.
+            logger.warning(
+                "Batch reply was not a usable JSON array (size=%d, depth=%d); splitting",
+                len(batch),
+                depth,
+            )
 
         if len(batch) > 1 and depth < MAX_SPLIT_DEPTH:
             middle = len(batch) // 2
@@ -305,12 +364,13 @@ class SegmentTranslator:
             tail = await self._translate_batch(batch[middle:], depth + 1)
             return head + tail
 
-        return [await asyncio.to_thread(self._plain, item) for item in batch]
+        return [await self._call(self._plain, item) for item in batch]
 
     async def translate_all(
         self,
         texts: Sequence[str | None],
         on_progress: Callable[[int, int], None] | None = None,
+        on_plan: Callable[[int, int], None] | None = None,
     ) -> list[str | None]:
         """Translate a slot-aligned list, returning a list of the same length."""
         out: list[str | None] = list(texts)
@@ -320,11 +380,24 @@ class SegmentTranslator:
             if needs_translation(text):
                 unique.setdefault(text, []).append(index)  # type: ignore[arg-type]
         if not unique:
+            logger.info("Nothing to translate: no segment contains translatable letters")
             return out
 
         batches = _chunk(list(unique.keys()))
         total = len(batches)
+        # Report the workload before the first request goes out, so the UI can
+        # show a real denominator instead of an apparently frozen 1%.
+        logger.info(
+            "Segment pipeline plan: %d slots, %d unique strings, %d batches",
+            len(texts),
+            len(unique),
+            total,
+        )
+        if on_plan:
+            on_plan(total, len(unique))
+
         completed = 0
+        started = time.monotonic()
         semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
         async def run(batch: list[str]) -> tuple[list[str], list[str]]:
@@ -341,6 +414,13 @@ class SegmentTranslator:
                     for index in unique[source]:
                         out[index] = translated
                 completed += 1
+                logger.info(
+                    "Batch %d/%d done (%.1fs elapsed, %d strings)",
+                    completed,
+                    total,
+                    time.monotonic() - started,
+                    len(batch),
+                )
                 if on_progress:
                     on_progress(completed, total)
         finally:
@@ -432,16 +512,32 @@ async def run_pipeline(
     src: Path,
     dst: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    on_plan: Callable[[int, int], None] | None = None,
 ) -> TranslationOutcome:
     """Collect -> translate -> write back. The whole non-PDF pipeline."""
+    started = time.monotonic()
     collected = handler.collect(src)
     texts = [text for _slot, text in collected]
-    translated = await translator.translate_all(texts, on_progress=on_progress)
+    logger.info(
+        "Parsed %s: %d slots in %.2fs",
+        src.name,
+        len(collected),
+        time.monotonic() - started,
+    )
+    translated = await translator.translate_all(texts, on_progress=on_progress, on_plan=on_plan)
     handler.write_back(src, dst, translated)
     changed = sum(
         1
         for original, result in zip(texts, translated)
         if result is not None and result != original
+    )
+    logger.info(
+        "Finished %s -> %s in %.1fs (%d/%d slots changed)",
+        src.name,
+        dst.name,
+        time.monotonic() - started,
+        changed,
+        len(collected),
     )
     return TranslationOutcome(
         output_path=dst,

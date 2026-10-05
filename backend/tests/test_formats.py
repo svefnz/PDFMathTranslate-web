@@ -27,6 +27,7 @@ from backend.formats import (  # noqa: E402
     run_pipeline,
 )
 from backend.formats.base import (  # noqa: E402
+    BatchTranslationError,
     apply_paragraph_text,
     needs_translation,
     _chunk,
@@ -592,3 +593,141 @@ def test_adapter_reports_llm_capability(tmp_path, monkeypatch, engine_type, engi
     assert isinstance(translator, SegmentTranslator)
     assert translator.llm_capable is expected_llm
     assert seen["lang_out"] == "zh-CN"
+
+
+# ---------------------------------------------------------------------------
+# engine failures must be loud, fast, and must not amplify requests
+# ---------------------------------------------------------------------------
+class FailingEngine:
+    """Stands in for a rate-limited / overloaded endpoint."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = 0
+
+    def llm_translate(self, prompt: str) -> str:
+        self.calls += 1
+        raise self.exc
+
+    def translate(self, text: str) -> str:
+        self.calls += 1
+        raise self.exc
+
+
+def test_engine_failure_does_not_amplify_requests(tmp_path):
+    """A dead engine must fail once per batch, not once per segment.
+
+    The old code split a failed batch in half on *any* exception, so a single
+    429 turned into 2**depth extra calls and eventually one call per segment.
+    """
+    # 30 short lines == exactly one batch (MAX_BATCH_ITEMS is 40)
+    src = tmp_path / "many.txt"
+    src.write_text("\n".join(f"Line {i} of text" for i in range(30)) + "\n")
+    fake = FailingEngine(RuntimeError("Error code: 429 - rate limited"))
+    translator = SegmentTranslator(fake, "zh-CN", llm_capable=True)
+
+    with pytest.raises(BatchTranslationError) as excinfo:
+        asyncio.run(
+            run_pipeline(get_handler("many.txt"), translator, src, tmp_path / "out.txt")
+        )
+
+    assert fake.calls == 1, f"engine called {fake.calls} times for one batch"
+    assert "429" in str(excinfo.value) or "限流" in str(excinfo.value)
+
+
+def test_engine_failure_with_several_batches_stays_bounded(tmp_path):
+    """Concurrency means a couple of batches may already be in flight; that is
+    fine, but the count must stay near the batch count, not the segment count."""
+    src = tmp_path / "bounded.txt"
+    src.write_text("\n".join(f"Line {i} of text" for i in range(200)) + "\n")
+    fake = FailingEngine(RuntimeError("Error code: 429 - rate limited"))
+    translator = SegmentTranslator(fake, "zh-CN", llm_capable=True)
+
+    with pytest.raises(BatchTranslationError):
+        asyncio.run(
+            run_pipeline(get_handler("bounded.txt"), translator, src, tmp_path / "out.txt")
+        )
+
+    # 200 lines / 40 per batch = 5 batches; MAX_CONCURRENCY is 4
+    assert fake.calls <= 5, f"engine called {fake.calls} times"
+    assert fake.calls < 20, "request amplification is back"
+
+
+def test_engine_failure_message_is_actionable():
+    from backend.formats.base import describe_engine_error
+
+    rate = describe_engine_error(RuntimeError("Error code: 429 - rate limited"))
+    assert "限流" in rate and "大模型接口调用失败" in rate
+
+    auth = describe_engine_error(RuntimeError("Error code: 401 - invalid_api_key"))
+    assert "API Key" in auth
+
+    timeout = describe_engine_error(RuntimeError("Request timeout after 30s"))
+    assert "超时" in timeout
+
+    conn = describe_engine_error(RuntimeError("Connection error: refused"))
+    assert "Base URL" in conn
+
+
+def test_batch_timeout_surfaces_instead_of_hanging(tmp_path):
+    """A stalled endpoint must not freeze the whole document forever."""
+    import time as _time
+
+    class Hanging:
+        def llm_translate(self, prompt: str) -> str:
+            _time.sleep(3)
+            return "[]"
+
+        def translate(self, text: str) -> str:
+            _time.sleep(3)
+            return text
+
+    src = tmp_path / "hang.txt"
+    src.write_text("Hello stalled world\n")
+    translator = SegmentTranslator(Hanging(), "zh-CN", llm_capable=True, batch_timeout=0.2)
+
+    async def go() -> float:
+        started = _time.monotonic()
+        with pytest.raises(BatchTranslationError) as excinfo:
+            await run_pipeline(get_handler("hang.txt"), translator, src, tmp_path / "out.txt")
+        assert "没有返回" in str(excinfo.value)
+        return _time.monotonic() - started
+
+    # measure inside the loop: asyncio.run() additionally waits for the abandoned
+    # worker thread at executor shutdown, which is not what we are asserting
+    assert asyncio.run(go()) < 1.0
+
+
+def test_parse_failure_still_splits_and_recovers(tmp_path):
+    """Only malformed *replies* justify splitting; that path must keep working."""
+    src = tmp_path / "split.txt"
+    src.write_text("\n".join(f"Sentence {i}" for i in range(8)) + "\n")
+    fake = FakeLlm(mode="invalid")
+    translator = SegmentTranslator(fake, "zh-CN", llm_capable=True)
+    outcome = asyncio.run(
+        run_pipeline(get_handler("split.txt"), translator, src, tmp_path / "out.txt")
+    )
+    assert outcome.translated_count == 8
+    assert "SENTENCE 7" in (tmp_path / "out.txt").read_text()
+
+
+def test_plan_is_reported_before_the_first_request(tmp_path):
+    """The UI needs a real denominator immediately, not a frozen 1%."""
+    src = tmp_path / "plan.txt"
+    src.write_text("\n".join(f"Line {i}" for i in range(200)) + "\n")
+    plan: list[tuple[int, int]] = []
+    translator = make_translator(FakeLlm())
+
+    asyncio.run(
+        run_pipeline(
+            get_handler("plan.txt"),
+            translator,
+            src,
+            tmp_path / "out.txt",
+            on_plan=lambda batches, unique: plan.append((batches, unique)),
+        )
+    )
+    assert len(plan) == 1
+    batches, unique = plan[0]
+    assert unique == 200
+    assert batches > 1

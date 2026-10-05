@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -30,6 +31,11 @@ except ImportError:  # pragma: no cover - flat sys.path fallback
     from formats.base import SegmentTranslator
 
 logger = logging.getLogger(__name__)
+
+#: With no explicit timeout the OpenAI SDK waits forever, so a stalled socket
+#: freezes the job with no way out. Applied only when the engine config leaves
+#: the timeout empty.
+DEFAULT_ENGINE_TIMEOUT_SECONDS = int(os.environ.get("SEGMENT_ENGINE_TIMEOUT_S", "180"))
 
 
 class TranslationAdapter:
@@ -183,12 +189,30 @@ class TranslationAdapter:
                 break
 
         translator = get_translator(settings)
+        cls._ensure_engine_timeout(settings)
         return SegmentTranslator(
             translator,
             settings.translation.lang_out,
             llm_capable,
             glossary,
+            batch_timeout=float(os.environ.get("SEGMENT_BATCH_TIMEOUT_S", "300")),
         )
+
+    @staticmethod
+    def _ensure_engine_timeout(settings: SettingsModel) -> None:
+        """Fill in a request timeout when the engine config left it unset."""
+        engine_settings = settings.translate_engine_settings
+        fields = getattr(type(engine_settings), "model_fields", None) or {}
+        for name in fields:
+            if not name.endswith("_timeout"):
+                continue
+            if getattr(engine_settings, name, None) not in (None, ""):
+                continue
+            try:
+                setattr(engine_settings, name, str(DEFAULT_ENGINE_TIMEOUT_SECONDS))
+                logger.info("Applied default %s=%ss", name, DEFAULT_ENGINE_TIMEOUT_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - validation may refuse it
+                logger.debug("Could not default %s: %s", name, exc)
 
     @classmethod
     async def translate_stream(
