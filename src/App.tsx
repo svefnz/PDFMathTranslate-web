@@ -608,8 +608,10 @@ export function App() {
     setErrorMsg(null)
     setIsTranslating(true)
     setProgress(1)
-    setStage("正在初始化视觉模型与解析文档...")
-    setStageDetail("首次分析或多页文档版面提取耗时稍长，请耐心稍候")
+    setStage(isPdfFile ? "正在初始化视觉模型与解析文档..." : "正在解析文档结构...")
+    // The "visual model / page layout" wait only applies to the BabelDOC PDF path;
+    // for other formats it would be misleading copy that never gets replaced.
+    setStageDetail(isPdfFile ? "首次分析或多页文档版面提取耗时稍长，请耐心稍候" : "")
     setResult(null)
 
     // Build engine config
@@ -735,6 +737,9 @@ export function App() {
                         parsed.total_parts > 1 ? ` (Part ${parsed.part_index}/${parsed.total_parts})` : ""
                       }`
                     )
+                  } else {
+                    // do not leave a stale detail line from a previous stage
+                    setStageDetail("")
                   }
                 } else if (currentEvent === "finish") {
                   setProgress(100)

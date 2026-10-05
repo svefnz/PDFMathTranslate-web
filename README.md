@@ -37,6 +37,50 @@ Cloudflare 免费/Pro 套餐会直接拒绍超过 **100 MB** 的请求体，返�
 
 本地直连（不经 Cloudflare）时，可以调大 `MAX_CHUNK_MB` 让常规大文件少走几个请求。
 
+### 卡在「解析…结构 1%」不动？先看日志
+
+非 PDF 格式的处理分两步：**解析结构（毫秒级）** → **请求大模型（耗时都在这）**。所以卡在 1% 几乎总是**大模型接口的问题**，而不是解析慢。进度条不动是因为上游对限流请求会**静默重试**：
+
+```python
+@retry(retry=retry_if_exception_type(openai.RateLimitError),
+       stop=stop_after_attempt(100), wait=wait_exponential(min=1, max=15))
+# 100 次 × 最醏 15 秒 = 最长约 25 分钟的无声重试
+```
+
+本项目的应对（已内建，不需要你做什么）：
+
+- **先报工作量**：发第一个请求前先报「已解析…共 N 个批次待翻译」，进度条从一开始就有真实分母；
+- **心跳**：超过 10 秒没回应就推送「已完成 0/N 批，等待响应 30s」，并在服务端输出警告；
+- **不再放大请求**：接口报错时直接失败，不会把批次对半拆（旧行为会把 1 个 429 变成数千次无效请求）；
+- **接口预检不阻塞事件循环**：预检放到工作线程并限时，一个坏引擎不会卡住整个服务器；
+- **报错是人话**：直接告知是限流 / Key 无效 / 超时 / 连不上，而不是丢一个 429 堆栈。
+
+**排查命令**（日志里现在有每个批次的耗时）：
+
+```bash
+ docker compose logs -f pdfmathtranslate-web
+```
+
+```
+INFO:pdf2zh-web.formats:Parsed x.pptx: 6000 slots in 0.15s
+INFO:pdf2zh-web.formats:Segment pipeline plan: 6000 slots, 5103 unique strings, 162 batches
+INFO:pdf2zh-web.formats:Batch 1/162 done (12.4s elapsed, 40 strings)
+```
+
+日志停在 `plan:` 后面而没有 `Batch ... done`、并且前端出现「等待响应 Ns」，那就是接口在限流或不可用。处理办法（按优先级）：
+
+1. 换成有余额的付费接口 / 自建 Ollama（Ollama 不跟额度无关）；
+2. 降低并发（设置中心 → 高级配置 → 线程数），避开对方的 QPS 限制；
+3. 如果是 429 很严重，把 `SEGMENT_BATCH_TIMEOUT_S` 调小，让它快速失败而不是慢慢磨。
+
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `SEGMENT_BATCH_TIMEOUT_S` | `300` | 单个批次（一次大模型请求）的等待上限。超过就报错退出，不再无限等 |
+| `ENGINE_PREFLIGHT_TIMEOUT_S` | `120` | 引擎预检（上游会真发一次 `Hello`）的等待上限 |
+| `SEGMENT_ENGINE_TIMEOUT_S` | `180` | 当引擎配置没有填超时时，自动补上的 HTTP 超时（OpenAI SDK 默认**不超时**，连接挂住就永远等） |
+
+> `SEGMENT_BATCH_TIMEOUT_S` 超时后，那个被丢下的工作线程会继续跑直到 SDK 自己放弃（Python 无法强杀线程），但因为整个任务已经失败退出，所以不影响后续请求。
+
 ### 设计要点
 
 - **零重复实现的 LLM 层**：文本类格式直接复用 `pdf2zh_next` 的 `BaseTranslator`（17 个引擎 + 磁盘缓存 + 限流 + CoT 清洗），不另起一套客户端。

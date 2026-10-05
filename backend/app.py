@@ -91,6 +91,16 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * _MB
 MAX_CHUNK_COUNT = 100_000
 UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
+#: How long the segment pipeline may stay silent before it tells the UI it is
+#: still waiting. Upstream retries a rate-limited engine silently for up to
+#: ~25 minutes, which is indistinguishable from a crash without this.
+HEARTBEAT_SECONDS = 10
+
+#: Ceiling for the engine pre-flight (upstream does a live "Hello" translation
+#: while building the translator). It is a blocking call with up to ~100 silent
+#: retries, so it must never run on the event loop nor last unbounded.
+ENGINE_PREFLIGHT_TIMEOUT_S = int(os.environ.get("ENGINE_PREFLIGHT_TIMEOUT_S", "120"))
+
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 PARTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -509,17 +519,31 @@ async def _stream_segment_events(handler, translator, file_path, output_path, qu
     ``run_pipeline`` reports progress through a synchronous callback, so it
     pushes onto a queue that this generator drains. The queue is only touched
     from the event loop, so no locking is needed.
+
+    Two things this must get right for a big document on a slow model:
+
+    * the batch count is reported *before* the first request goes out, so the UI
+      shows a real denominator instead of an apparently frozen 1%;
+    * while nothing is coming back, a heartbeat keeps the UI honest about how
+      long we have been waiting, because upstream silently retries a
+      rate-limited engine for up to ~25 minutes.
     """
     label = handler.label
-    yield {
-        "event": "progress",
-        "data": {
-            "stage": f"解析{label}结构",
-            "progress": 1,
-            "stage_current": 0,
-            "stage_total": 0,
-        },
-    }
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def progress_event(stage: str, percent: float, current: int, total: int) -> dict:
+        return {
+            "event": "progress",
+            "data": {
+                "stage": stage,
+                "progress": max(1, min(int(percent), 99)),
+                "stage_current": current,
+                "stage_total": total,
+            },
+        }
+
+    yield progress_event(f"解析{label}结构", 1, 0, 0)
 
     task = asyncio.create_task(
         run_pipeline(
@@ -527,42 +551,63 @@ async def _stream_segment_events(handler, translator, file_path, output_path, qu
             translator,
             file_path,
             output_path,
-            on_progress=lambda done, total: queue.put_nowait((done, total)),
+            on_progress=lambda done, total: queue.put_nowait(("batch", done, total)),
+            on_plan=lambda total, unique: queue.put_nowait(("plan", total, unique)),
         )
     )
+
+    plan_total = 0
+    done_count = 0
+    last_emit = loop.time()
 
     try:
         while True:
             try:
-                done, total = await asyncio.wait_for(queue.get(), timeout=0.4)
+                kind, a, b = await asyncio.wait_for(queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 if task.done():
                     break
+                # Nothing has come back for a while: say so, with the elapsed
+                # time, instead of leaving a frozen bar on screen.
+                silent_for = loop.time() - last_emit
+                if silent_for >= HEARTBEAT_SECONDS:
+                    waited = int(loop.time() - started)
+                    if plan_total:
+                        stage = (
+                            f"大模型翻译{label}中"
+                            f"（已完成 {done_count}/{plan_total} 批，等待响应 {waited}s）"
+                        )
+                    else:
+                        stage = f"正在调用大模型接口（已等待 {waited}s）"
+                    percent = 5 + (done_count / plan_total * 90 if plan_total else 0)
+                    yield progress_event(stage, percent, done_count, plan_total)
+                    last_emit = loop.time()
+                    if waited and waited % (HEARTBEAT_SECONDS * 6) < HEARTBEAT_SECONDS:
+                        logger.warning(
+                            "No batch has completed after %ss. The engine is "
+                            "most likely rate limiting or overloaded; upstream "
+                            "retries such requests silently for a long time.",
+                            waited,
+                        )
                 continue
-            # coalesce everything already queued so we do not thrash the UI
+
+            # coalesce whatever else is already queued so the UI is not thrashed
             while not queue.empty():
-                done, total = queue.get_nowait()
-            percent = 5 + int(done / total * 90) if total else 5
-            yield {
-                "event": "progress",
-                "data": {
-                    "stage": f"大模型翻译{label}中",
-                    "progress": min(percent, 95),
-                    "stage_current": done,
-                    "stage_total": total,
-                },
-            }
+                kind, a, b = queue.get_nowait()
+
+            if kind == "plan":
+                plan_total = a
+                yield progress_event(
+                    f"已解析{label}，共 {a} 个批次待翻译（{b} 条去重文本）", 5, 0, a
+                )
+            else:
+                done_count = a
+                percent = 5 + (a / b * 90 if b else 90)
+                yield progress_event(f"大模型翻译{label}中", percent, a, b)
+            last_emit = loop.time()
 
         outcome = task.result()
-        yield {
-            "event": "progress",
-            "data": {
-                "stage": "生成输出文档",
-                "progress": 99,
-                "stage_current": 0,
-                "stage_total": 0,
-            },
-        }
+        yield progress_event("生成输出文档", 99, done_count, plan_total)
         yield {
             "event": "finish",
             "data": {
@@ -623,7 +668,23 @@ async def stream_translation(
                 detail=f"不支持的文件格式：{file_path.suffix}，请重新上传。",
             )
         try:
-            translator = TranslationAdapter.build_segment_translator(settings)
+            # Build in a worker thread: this performs a live translation as a
+            # health check, and doing it inline would block the whole event loop
+            # (every other request too) for the engine's entire retry window.
+            translator = await asyncio.wait_for(
+                asyncio.to_thread(TranslationAdapter.build_segment_translator, settings),
+                timeout=ENGINE_PREFLIGHT_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Engine pre-flight timed out after %ss", ENGINE_PREFLIGHT_TIMEOUT_S)
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"大模型接口预检超过 {ENGINE_PREFLIGHT_TIMEOUT_S} 秒未响应。"
+                    "该接口很可能正在限流或不可用，请检查 API Key / Base URL，"
+                    "或改用其他引擎后重试。"
+                ),
+            )
         except Exception as e:
             logger.error(f"Failed to build segment translator: {e}")
             raise HTTPException(status_code=400, detail=str(e))
