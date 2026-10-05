@@ -22,6 +22,21 @@
 
 > 旧版二进制 Office 格式（`.doc` `.ppt` `.xls`）与启用宏的 `.doc?` / `.ppt?` / `.xls?` 变体不在支持范围内，请先另存为对应的 `.docx` `.pptx` `.xlsx`。
 
+### 大文件上传（分片）
+
+Cloudflare 免费/Pro 套餐会直接拒绍超过 **100 MB** 的请求体，返回一张 Cloudflare 自己的 `413 Payload Too Large` 页面 —— 请求根本到不了容器（Business 是 200 MB，Enterprise 可配到 5 GB）。
+
+因此超过一个分片的文件会由浏览器切片上传（`/api/upload/chunk`），再由 `/api/upload/complete` 在服务端按序合并，字节完全一致。这样不靠 DNS 绕过、不丢 Cloudflare 防护，任何套餐都能传大文件。
+
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `MAX_CHUNK_MB` | `64` | 单个分片上限，同时也是「小于等于它就直传」的阈值。对外公布的值会被钳到 90 MB 以下，保证浏览器选的分片永远不会被 Cloudflare 拦下 |
+| `MAX_UPLOAD_MB` | `2048` | 合并后文件总大小上限，防止分片序列把磁盘写满 |
+
+分片暂存在 `data/parts/<upload_id>/`，合并完成（或被拒绍）后立即删除；该目录有意放在 `data/uploads/` 之外，保证半成品永远不可能通过 `/api/uploads/{file_id}` 被读到。
+
+本地直连（不经 Cloudflare）时，可以调大 `MAX_CHUNK_MB` 让常规大文件少走几个请求。
+
 ### 设计要点
 
 - **零重复实现的 LLM 层**：文本类格式直接复用 `pdf2zh_next` 的 `BaseTranslator`（17 个引擎 + 磁盘缓存 + 限流 + CoT 清洗），不另起一套客户端。

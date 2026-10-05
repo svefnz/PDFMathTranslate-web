@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import time
@@ -13,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -67,9 +68,32 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 OUTPUT_DIR = BASE_DIR / "data" / "outputs"
 FRONTEND_DIST = BASE_DIR / "dist"
+#: Staging area for in-flight chunked uploads. Kept outside UPLOAD_DIR on
+#: purpose so partial files can never be reached through /api/uploads/.
+PARTS_DIR = BASE_DIR / "data" / "parts"
+
+# --- large upload support ---------------------------------------------------
+#: Cloudflare rejects request bodies over 100 MB on Free/Pro (200 MB Business),
+#: which is what produced the "413 Payload Too Large" page on a 120 MB deck.
+#: Anything larger than one chunk is now split client-side and reassembled by
+#: /api/upload/complete, so the deployment works behind any proxy limit.
+_MB = 1024 * 1024
+#: Hard server-side ceiling for a single chunk request (also the single-shot
+#: upload threshold: files at or below this go through /api/upload untouched).
+MAX_CHUNK_BYTES = int(os.environ.get("MAX_CHUNK_MB", "64")) * _MB
+#: What we advertise to the browser. Clamped below Cloudflare's 100 MB so the
+#: client can never pick a chunk size the edge would reject.
+CLIENT_CHUNK_BYTES = min(MAX_CHUNK_BYTES, 90 * _MB)
+#: Ceiling for a reassembled file, to stop a chunk series from filling the disk.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * _MB
+#: The max plausible chunk count for the largest allowed file at the smallest
+#: sane chunk size; only used to reject nonsense input.
+MAX_CHUNK_COUNT = 100_000
+UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+PARTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Active tasks for cooperative cancellation: session_id -> asyncio.Task
 active_tasks: dict[str, asyncio.Task] = {}
@@ -335,6 +359,145 @@ async def upload_document(
         "file_id": file_id,
         "filename": file.filename,
         "size": target_path.stat().st_size,
+        "suffix": suffix,
+        "kind": "pdf" if suffix == ".pdf" else "segments",
+    }
+
+
+@app.get("/api/upload/limits")
+async def get_upload_limits():
+    """Tells the browser how to slice large files.
+
+    Advertised rather than hardcoded in the frontend so a deployment can tune
+    it with ``MAX_CHUNK_MB`` without the two sides drifting apart.
+    """
+    return {
+        "chunk_bytes": CLIENT_CHUNK_BYTES,
+        "single_shot_threshold_bytes": CLIENT_CHUNK_BYTES,
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "max_upload_mb": MAX_UPLOAD_BYTES // _MB,
+    }
+
+
+def _parts_dir(upload_id: str) -> Path:
+    """Resolve the staging directory for one upload, rejecting anything odd.
+
+    ``upload_id`` arrives from the client, so it is restricted to a fixed
+    128-bit hex shape before being used as a path segment.
+    """
+    if not UPLOAD_ID_RE.match(upload_id):
+        raise HTTPException(
+            status_code=400,
+            detail="upload_id 必须是 32 位十六进制字符串",
+        )
+    return PARTS_DIR / upload_id
+
+
+def _validate_chunk_request(index: int, total: int) -> None:
+    if total < 1 or total > MAX_CHUNK_COUNT:
+        raise HTTPException(status_code=400, detail=f"分片总数不合法: {total}")
+    if index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail=f"分片序号不合法: {index}/{total}")
+
+
+@app.post("/api/upload/chunk")
+async def upload_chunk(
+    file: UploadFile = File(...),
+    upload_id: str = Form(...),
+    index: int = Form(...),
+    total: int = Form(...),
+    filename: str = Form(...),
+    _user: str | None = Depends(get_current_user),
+):
+    """Stores one slice of a large file.
+
+    Chunks land in ``data/parts/<upload_id>/`` and are concatenated in order by
+    ``/api/upload/complete``. Each request stays well under any proxy limit.
+    """
+    _validate_upload_name(filename)  # fail fast, before accepting gigabytes
+    _validate_chunk_request(index, total)
+    folder = _parts_dir(upload_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{index:06d}.part"
+
+    written = 0
+    try:
+        with target.open("wb") as buffer:
+            while chunk := await file.read(_MB):
+                written += len(chunk)
+                if written > MAX_CHUNK_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"单个分片超过服务端上限 {MAX_CHUNK_BYTES // _MB} MB，"
+                            "请调小前端分片大小后重试"
+                        ),
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        logger.error(f"Failed to store chunk {index} of {upload_id}: {e}")
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="保存分片失败")
+
+    return {"ok": True, "index": index, "size": written}
+
+
+class CompleteUploadRequest(BaseModel):
+    upload_id: str
+    filename: str
+    total: int
+
+
+@app.post("/api/upload/complete")
+async def upload_complete(
+    req: CompleteUploadRequest,
+    _user: str | None = Depends(get_current_user),
+):
+    """Concatenates uploaded chunks into a finished upload."""
+    suffix = _validate_upload_name(req.filename)
+    _validate_chunk_request(0, req.total)
+    folder = _parts_dir(req.upload_id)
+
+    missing = [i for i in range(req.total) if not (folder / f"{i:06d}.part").is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"分片不完整，缺少 {len(missing)} 个（首个缺失序号：{missing[0]}）",
+        )
+
+    file_id = f"{uuid.uuid4().hex}_{req.filename}"
+    target_path = UPLOAD_DIR / file_id
+    try:
+        total_bytes = 0
+        with target_path.open("wb") as out:
+            for index in range(req.total):
+                part = folder / f"{index:06d}.part"
+                total_bytes += part.stat().st_size
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上限 {MAX_UPLOAD_BYTES // _MB} MB",
+                    )
+                with part.open("rb") as src:
+                    shutil.copyfileobj(src, out, _MB)
+    except HTTPException:
+        target_path.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        logger.error(f"Failed to assemble upload {req.upload_id}: {e}")
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="合并分片失败")
+    finally:
+        # the staged slices are dead weight once assembled (or once rejected)
+        shutil.rmtree(folder, ignore_errors=True)
+
+    return {
+        "file_id": file_id,
+        "filename": req.filename,
+        "size": total_bytes,
         "suffix": suffix,
         "kind": "pdf" if suffix == ".pdf" else "segments",
     }
