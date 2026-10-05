@@ -69,6 +69,190 @@ function extOf(filename: string): string {
   return index === -1 ? "" : filename.slice(index).toLowerCase()
 }
 
+// ---------------------------------------------------------------------------
+// Upload helpers
+//
+// Cloudflare rejects request bodies over 100 MB on Free/Pro (a 120 MB deck got
+// an HTML "413 Payload Too Large" page straight from the edge, never reaching
+// the container). Large files are therefore sliced client-side and reassembled
+// by /api/upload/complete. The slice size is advertised by /api/upload/limits
+// so it can be tuned server-side without the two sides drifting apart.
+// ---------------------------------------------------------------------------
+const DEFAULT_CHUNK_BYTES = 64 * 1024 * 1024
+const CHUNK_ATTEMPTS = 3
+
+class UnauthorizedUploadError extends Error {
+  constructor() {
+    super("访问需要认证，请先登录")
+    this.name = "UnauthorizedUploadError"
+  }
+}
+
+/** 128-bit hex id; crypto.randomUUID() needs a secure context, LAN http does not have one. */
+function randomUploadId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "")
+  }
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
+}
+
+interface UploadedDocument {
+  file_id: string
+  filename: string
+  size: number
+  suffix?: string
+  kind?: string
+}
+
+/** FastAPI error bodies use `detail`. */
+interface UploadFailureBody {
+  detail?: string
+}
+
+type UploadBody = UploadedDocument | UploadFailureBody
+
+interface UploadResponse {
+  status: number
+  body: UploadBody | null
+  networkError: string | null
+}
+
+function isFailureBody(body: UploadBody | null): body is UploadFailureBody {
+  return body !== null && typeof (body as UploadFailureBody).detail === "string"
+}
+
+function postForm(
+  url: string,
+  form: FormData,
+  token: string | null,
+  onFraction?: (fraction: number) => void
+): Promise<UploadResponse> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", url)
+    if (token) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    }
+    xhr.upload.onprogress = (event) => {
+      if (onFraction && event.lengthComputable && event.total > 0) {
+        onFraction(event.loaded / event.total)
+      }
+    }
+    xhr.onload = () => {
+      let parsed: UploadBody | null = null
+      try {
+        parsed = JSON.parse(xhr.responseText) as UploadBody
+      } catch {
+        // Cloudflare / proxy error pages are HTML, not JSON
+      }
+      resolve({ status: xhr.status, body: parsed, networkError: null })
+    }
+    xhr.onerror = () =>
+      resolve({ status: 0, body: null, networkError: "网络连接异常，文件上传失败" })
+    xhr.send(form)
+  })
+}
+
+function describeUploadFailure(res: UploadResponse, fallback: string): Error {
+  if (res.status === 401) return new UnauthorizedUploadError()
+  if (res.networkError) return new Error(res.networkError)
+  if (isFailureBody(res.body)) return new Error(res.body.detail as string)
+  if (res.status === 413) {
+    return new Error(
+      "上传被网关拒绝（413）。文件或分片超过反向代理上限，请调小分片大小后重试。"
+    )
+  }
+  return new Error(`${fallback} (HTTP ${res.status})`)
+}
+
+async function uploadInOneShot(
+  file: File,
+  token: string | null,
+  onProgress: (percent: number) => void
+): Promise<UploadedDocument> {
+  const form = new FormData()
+  form.append("file", file)
+  const res = await postForm("/api/upload", form, token, (f) => onProgress(Math.round(f * 100)))
+  if (res.status < 200 || res.status >= 300 || !res.body || isFailureBody(res.body)) {
+    throw describeUploadFailure(res, "上传失败")
+  }
+  onProgress(100)
+  return res.body
+}
+
+async function uploadInChunks(
+  file: File,
+  chunkBytes: number,
+  token: string | null,
+  onProgress: (percent: number, detail: string) => void
+): Promise<UploadedDocument> {
+  const uploadId = randomUploadId()
+  const total = Math.ceil(file.size / chunkBytes)
+  let sent = 0
+
+  for (let index = 0; index < total; index += 1) {
+    const start = index * chunkBytes
+    const blob = file.slice(start, Math.min(file.size, start + chunkBytes))
+    let lastError: Error | null = null
+    let stored = false
+
+    for (let attempt = 0; attempt < CHUNK_ATTEMPTS && !stored; attempt += 1) {
+      const form = new FormData()
+      form.append("file", blob, `${file.name}.part${index}`)
+      form.append("upload_id", uploadId)
+      form.append("index", String(index))
+      form.append("total", String(total))
+      form.append("filename", file.name)
+
+      const res = await postForm("/api/upload/chunk", form, token, (fraction) =>
+        onProgress(
+          Math.round(((sent + fraction * blob.size) / file.size) * 100),
+          `正在分片上传 ${index + 1}/${total}${attempt > 0 ? `（第 ${attempt + 1} 次尝试）` : ""}`
+        )
+      )
+
+      if (res.status >= 200 && res.status < 300) {
+        stored = true
+        break
+      }
+      lastError = describeUploadFailure(res, `分片 ${index + 1}/${total} 上传失败`)
+      if (lastError instanceof UnauthorizedUploadError) throw lastError
+      // a rejected payload will be rejected again, so only retry transport/server faults
+      if (res.status >= 400 && res.status < 500) break
+    }
+
+    if (!stored) {
+      throw lastError ?? new Error(`分片 ${index + 1}/${total} 上传失败`)
+    }
+    sent += blob.size
+    onProgress(Math.round((sent / file.size) * 100), `已上传 ${index + 1}/${total} 个分片`)
+  }
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  let res: Response
+  try {
+    res = await fetch("/api/upload/complete", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ upload_id: uploadId, filename: file.name, total }),
+    })
+  } catch {
+    throw new Error("网络连接异常，文件合并失败")
+  }
+  if (res.status === 401) throw new UnauthorizedUploadError()
+  const body = (await res.json().catch(() => null)) as UploadBody | null
+  if (!res.ok || !body || isFailureBody(body)) {
+    throw new Error(
+      (isFailureBody(body) && body.detail) || `合并分片失败 (HTTP ${res.status})`
+    )
+  }
+  onProgress(100, "上传完成，正在解析文档...")
+  return body
+}
+
 const LANGUAGES = [
   { label: "英语 (English)", value: "en" },
   { label: "简体中文 (Simplified Chinese)", value: "zh-CN" },
@@ -265,6 +449,10 @@ export function App() {
   const [acceptAttr, setAcceptAttr] = useState(".pdf")
   const [supportedExts, setSupportedExts] = useState<string[]>([".pdf"])
   const [legacyHints, setLegacyHints] = useState<Record<string, string>>({})
+  // Slice size and ceiling for large uploads, also backend-driven.
+  const [chunkBytes, setChunkBytes] = useState(DEFAULT_CHUNK_BYTES)
+  const [maxUploadBytes, setMaxUploadBytes] = useState(0)
+  const [uploadDetail, setUploadDetail] = useState("")
 
   useEffect(() => {
     let cancelled = false
@@ -278,6 +466,16 @@ export function App() {
       })
       .catch(() => {
         // keep the PDF-only fallback
+      })
+    fetch("/api/upload/limits")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.chunk_bytes) return
+        setChunkBytes(data.chunk_bytes)
+        setMaxUploadBytes(data.max_upload_bytes || 0)
+      })
+      .catch(() => {
+        // fall back to the built-in 64 MB slice
       })
     return () => {
       cancelled = true
@@ -320,64 +518,45 @@ export function App() {
       setErrorMsg(`不支持的文件格式 ${ext || selectedFile.name}，当前支持：${supportedExts.join("、")}`)
       return
     }
+    if (maxUploadBytes > 0 && selectedFile.size > maxUploadBytes) {
+      setErrorMsg(
+        `文件 ${(selectedFile.size / 1024 / 1024).toFixed(0)} MB 超过服务端上限 ${(maxUploadBytes / 1024 / 1024).toFixed(0)} MB`
+      )
+      return
+    }
+
     setErrorMsg(null)
     setIsUploading(true)
     setUploadProgress(0)
-
-    const formData = new FormData()
-    formData.append("file", selectedFile)
+    setUploadDetail("正在上传文件...")
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.open("POST", "/api/upload")
-        if (authToken) {
-          xhr.setRequestHeader("Authorization", `Bearer ${authToken}`)
-        }
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0) {
-            const percent = Math.min(100, Math.round((event.loaded / event.total) * 100))
+      const tooBigForOneRequest = selectedFile.size > chunkBytes
+      const data = tooBigForOneRequest
+        ? await uploadInChunks(selectedFile, chunkBytes, authToken, (percent, detail) => {
             setUploadProgress(percent)
-          }
-        }
+            setUploadDetail(detail)
+          })
+        : await uploadInOneShot(selectedFile, authToken, (percent) => {
+            setUploadProgress(percent)
+            setUploadDetail(percent < 100 ? "正在上传文件..." : "上传完成，正在解析文档...")
+          })
 
-        xhr.onload = () => {
-          if (xhr.status === 401) {
-            setAuthRequired(true)
-            setLoginOpen(true)
-            reject(new Error("访问需要认证，请先登录"))
-            return
-          }
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const data = JSON.parse(xhr.responseText)
-              setFile({
-                fileId: data.file_id,
-                filename: data.filename,
-                size: data.size,
-                originalUrl: `/api/uploads/${data.file_id}`,
-              })
-              setResult(null)
-              setProgress(0)
-              setStage("")
-              setPreviewTab("original")
-              resolve()
-            } catch {
-              reject(new Error("解析服务器响应失败"))
-            }
-          } else {
-            reject(new Error("上传失败: " + xhr.responseText))
-          }
-        }
-
-        xhr.onerror = () => {
-          reject(new Error("网络连接异常，文件上传失败"))
-        }
-
-        xhr.send(formData)
+      setFile({
+        fileId: data.file_id,
+        filename: data.filename,
+        size: data.size,
+        originalUrl: `/api/uploads/${data.file_id}`,
       })
+      setResult(null)
+      setProgress(0)
+      setStage("")
+      setPreviewTab("original")
     } catch (err: any) {
+      if (err instanceof UnauthorizedUploadError) {
+        setAuthRequired(true)
+        setLoginOpen(true)
+      }
       setErrorMsg(err.message || "上传出错")
     } finally {
       setIsUploading(false)
@@ -771,6 +950,8 @@ export function App() {
                 onChange={(e) => {
                   const f = e.target.files?.[0]
                   if (f) handleFileUpload(f)
+                  // reset so picking the same file again still fires onChange
+                  e.target.value = ""
                 }}
               />
 
@@ -797,7 +978,7 @@ export function App() {
                   <div className="flex flex-col items-center gap-3 py-3 w-full max-w-xs">
                     <Loader2 className="w-7 h-7 animate-spin text-primary" />
                     <div className="w-full flex items-center justify-between text-xs text-muted-foreground px-1">
-                      <span>{uploadProgress < 100 ? "正在上传文件..." : "上传完成，正在解析文档..."}</span>
+                      <span>{uploadDetail || (uploadProgress < 100 ? "正在上传文件..." : "上传完成，正在解析文档...")}</span>
                       <span className="font-mono font-semibold text-primary">{uploadProgress}%</span>
                     </div>
                     <div className="w-full bg-muted/60 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden">
