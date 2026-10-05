@@ -52,6 +52,23 @@ interface TranslationResult {
   glossaryUrl: string | null
 }
 
+// Formats whose text we can render directly in the browser instead of an iframe.
+const TEXT_PREVIEW_EXTS = [
+  ".txt",
+  ".text",
+  ".log",
+  ".md",
+  ".markdown",
+  ".csv",
+  ".tsv",
+]
+const MAX_TEXT_PREVIEW_CHARS = 60000
+
+function extOf(filename: string): string {
+  const index = filename.lastIndexOf(".")
+  return index === -1 ? "" : filename.slice(index).toLowerCase()
+}
+
 const LANGUAGES = [
   { label: "英语 (English)", value: "en" },
   { label: "简体中文 (Simplified Chinese)", value: "zh-CN" },
@@ -243,6 +260,30 @@ export function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [result, setResult] = useState<TranslationResult | null>(null)
 
+  // Supported upload formats are served by the backend so the UI cannot drift
+  // from what /api/upload actually accepts.
+  const [acceptAttr, setAcceptAttr] = useState(".pdf")
+  const [supportedExts, setSupportedExts] = useState<string[]>([".pdf"])
+  const [legacyHints, setLegacyHints] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/formats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.accept) return
+        setAcceptAttr(data.accept)
+        setSupportedExts(data.extensions || [".pdf"])
+        setLegacyHints(data.legacy_hints || {})
+      })
+      .catch(() => {
+        // keep the PDF-only fallback
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // Preview tab: dual | mono | original
   const [previewTab, setPreviewTab] = useState<"dual" | "mono" | "original">("dual")
   const [isWebFullscreen, setIsWebFullscreen] = useState(false)
@@ -267,8 +308,16 @@ export function App() {
 
   // File upload handler
   const handleFileUpload = async (selectedFile: File) => {
-    if (!selectedFile.name.toLowerCase().endsWith(".pdf")) {
-      setErrorMsg("请上传 PDF 格式的文件")
+    const ext = extOf(selectedFile.name)
+    const legacyTarget = legacyHints[ext]
+    if (legacyTarget) {
+      setErrorMsg(
+        `暂不支持旧版 Office 二进制格式 ${ext}，请先在 Office / WPS 中另存为 ${legacyTarget} 后重新上传`
+      )
+      return
+    }
+    if (!supportedExts.includes(ext)) {
+      setErrorMsg(`不支持的文件格式 ${ext || selectedFile.name}，当前支持：${supportedExts.join("、")}`)
       return
     }
     setErrorMsg(null)
@@ -338,7 +387,7 @@ export function App() {
   // Start translation via SSE
   const handleStartTranslate = async () => {
     if (!file) {
-      setErrorMsg("请先上传需要翻译的 PDF 文件")
+      setErrorMsg("请先上传需要翻译的文档")
       return
     }
 
@@ -433,7 +482,7 @@ export function App() {
         thread_count: settings.threadCount,
         advanced_settings: advancedSettings,
       }
-      if (pageRange.trim()) {
+      if (isPdfFile && pageRange.trim()) {
         requestPayload.pages = pageRange.trim()
       }
 
@@ -516,7 +565,7 @@ export function App() {
                     dualUrl: parsed.dual_url,
                     glossaryUrl: parsed.glossary_url,
                   })
-                  setPreviewTab("dual")
+                  setPreviewTab(parsed.dual_url ? "dual" : "mono")
                   setIsTranslating(false)
                 } else if (currentEvent === "error") {
                   let errText = parsed.error || "翻译过程中发生错误"
@@ -560,6 +609,10 @@ export function App() {
     setStage("翻译已取消")
   }
 
+  const fileExt = file ? extOf(file.filename) : ""
+  const isPdfFile = fileExt === ".pdf"
+  const isTextPreviewable = TEXT_PREVIEW_EXTS.includes(fileExt)
+
   const activePdfUrl =
     previewTab === "dual" && result?.dualUrl
       ? `${result.dualUrl}#view=FitH`
@@ -575,6 +628,55 @@ export function App() {
       ? `${file.originalUrl}#view=FitH`
       : null
 
+  // For non-PDF documents the PDF iframe is useless; text formats get fetched
+  // and rendered, Office formats get a download card instead.
+  const activeDocUrl =
+    previewTab === "original" && file?.originalUrl
+      ? file.originalUrl
+      : result?.monoUrl || file?.originalUrl || null
+  const previewKey = !isPdfFile && isTextPreviewable && activeDocUrl ? activeDocUrl : null
+  const [textPreview, setTextPreview] = useState<{
+    key: string
+    text: string
+    truncated: boolean
+    error: string | null
+  } | null>(null)
+
+  useEffect(() => {
+    if (!previewKey) return
+    let cancelled = false
+    fetch(previewKey)
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((text) => {
+        if (cancelled) return
+        setTextPreview({
+          key: previewKey,
+          text: text.slice(0, MAX_TEXT_PREVIEW_CHARS),
+          truncated: text.length > MAX_TEXT_PREVIEW_CHARS,
+          error: null,
+        })
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setTextPreview({
+          key: previewKey,
+          text: "",
+          truncated: false,
+          error: String(err?.message || err),
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [previewKey])
+
+  // Everything below is derived, so switching tabs never needs a state reset.
+  const currentPreview = textPreview && textPreview.key === previewKey ? textPreview : null
+  const docPreviewLoading = Boolean(previewKey) && currentPreview === null
+  const docPreview = currentPreview && !currentPreview.error ? currentPreview.text : null
+  const docPreviewTruncated = currentPreview?.truncated ?? false
+  const docPreviewError = currentPreview?.error ?? null
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans transition-colors">
       {/* Top Navbar */}
@@ -588,7 +690,7 @@ export function App() {
               PDFMathTranslate <span className="text-primary font-bold">Web</span>
             </h1>
             <p className="text-xs text-muted-foreground mt-0.5">
-              基于 BabelDOC 的学术与公式保留专业 PDF 翻译系统
+              基于 BabelDOC 的学术与公式保留排版引擎，支持 PDF / Word / PPT / Excel / Markdown / TXT / CSV
             </p>
           </div>
         </div>
@@ -654,17 +756,17 @@ export function App() {
             <CardHeader className="pb-3">
               <CardTitle className="text-sm flex items-center gap-2">
                 <Upload className="w-4 h-4 text-primary" />
-                <span>PDF 文档上传</span>
+                <span>文档上传</span>
               </CardTitle>
               <CardDescription className="text-xs">
-                支持学术论文、书籍、研究报告等复杂数学公式排版 PDF
+                支持 PDF（保留公式与版面，可输出双语对照）、Word、PPT、Excel、Markdown、TXT、CSV
               </CardDescription>
             </CardHeader>
             <CardContent>
               <input
                 type="file"
                 ref={fileInputRef}
-                accept=".pdf"
+                accept={acceptAttr}
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
@@ -695,7 +797,7 @@ export function App() {
                   <div className="flex flex-col items-center gap-3 py-3 w-full max-w-xs">
                     <Loader2 className="w-7 h-7 animate-spin text-primary" />
                     <div className="w-full flex items-center justify-between text-xs text-muted-foreground px-1">
-                      <span>{uploadProgress < 100 ? "正在上传 PDF 文件..." : "上传完成，正在解析文档..."}</span>
+                      <span>{uploadProgress < 100 ? "正在上传文件..." : "上传完成，正在解析文档..."}</span>
                       <span className="font-mono font-semibold text-primary">{uploadProgress}%</span>
                     </div>
                     <div className="w-full bg-muted/60 dark:bg-muted/40 rounded-full h-1.5 overflow-hidden">
@@ -870,19 +972,21 @@ export function App() {
                 )}
               </div>
 
-              {/* Page Range Selection */}
-              <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-medium text-foreground">页码范围（选填）</Label>
-                  <span className="text-[10px] text-muted-foreground font-mono">留空则翻译全书</span>
+              {/* Page Range Selection (PDF only) */}
+              {isPdfFile && (
+                <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium text-foreground">页码范围（选填）</Label>
+                    <span className="text-[10px] text-muted-foreground font-mono">留空则翻译全书</span>
+                  </div>
+                  <Input
+                    placeholder="例: 1-3 或 1,2,5 (推荐多页大文档测试使用)"
+                    value={pageRange}
+                    onChange={(e) => setPageRange(e.target.value)}
+                    className="rounded-lg text-xs h-8 bg-background"
+                  />
                 </div>
-                <Input
-                  placeholder="例: 1-3 或 1,2,5 (推荐多页大文档测试使用)"
-                  value={pageRange}
-                  onChange={(e) => setPageRange(e.target.value)}
-                  className="rounded-lg text-xs h-8 bg-background"
-                />
-              </div>
+              )}
 
               {/* Action Buttons */}
               <div className="pt-2 flex items-center gap-3">
@@ -1093,7 +1197,64 @@ export function App() {
             </CardHeader>
 
             <CardContent className="p-0 flex-1 flex flex-col bg-muted/20 relative overflow-hidden">
-              {activePdfUrl ? (
+              {!isPdfFile && (result || file) ? (
+                <div className="flex-1 flex flex-col min-h-0">
+                  <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b bg-card/60">
+                    <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{file?.filename}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {file ? (file.size / 1024 / 1024).toFixed(2) : "0"} MB • {fileExt || "未知格式"}
+                        {isTextPreviewable ? " • 可直接预览文本" : " • 请下载后查看"}
+                      </p>
+                    </div>
+                    <a href={activeDocUrl || undefined} download target="_blank" rel="noreferrer">
+                      <Button size="sm" variant={result ? "default" : "outline"} className="rounded-xl gap-1.5 text-xs h-8">
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{result ? "下载译文" : "下载原文"}</span>
+                      </Button>
+                    </a>
+                  </div>
+
+                  {isTextPreviewable ? (
+                    <div className="flex-1 overflow-auto bg-background">
+                      {docPreviewLoading ? (
+                        <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>正在加载预览...</span>
+                        </div>
+                      ) : docPreview !== null ? (
+                        <pre className="p-4 text-xs leading-relaxed whitespace-pre-wrap break-words font-mono text-foreground">
+                          {docPreview}
+                          {docPreviewTruncated && (
+                            <span className="block mt-3 text-muted-foreground">
+                              ... 预览已截断，完整内容请下载文件查看
+                            </span>
+                          )}
+                        </pre>
+                      ) : (
+                        <div className="flex items-center justify-center py-16 text-xs text-muted-foreground">
+                          {docPreviewError ? `预览加载失败：${docPreviewError}` : "暂无可预览内容"}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-muted-foreground min-h-[360px]">
+                      <div className="w-16 h-16 rounded-2xl bg-muted/60 flex items-center justify-center mb-3">
+                        <FileText className="w-8 h-8 text-muted-foreground/50" />
+                      </div>
+                      <h3 className="text-sm font-medium text-foreground">
+                        {result ? "翻译已完成，请下载查看" : "Office 文档不支持在线预览"}
+                      </h3>
+                      <p className="text-xs text-muted-foreground max-w-sm mt-1">
+                        译文与原文保持相同的文件格式与排版。翻译过程会保留样式、表格与分页，点击上方按钮或在左侧下载译文。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : activePdfUrl ? (
                 <iframe
                   key={`${previewTab}-${activePdfUrl}`}
                   src={activePdfUrl}
@@ -1111,7 +1272,7 @@ export function App() {
                   </div>
                   <h3 className="text-sm font-medium text-foreground">暂无预览内容</h3>
                   <p className="text-xs text-muted-foreground max-w-sm mt-1">
-                    在左侧上传 PDF 并点击“开始智能翻译”，即可在此处实时对照阅读，并支持网页内部全屏展开浏览。
+                    在左侧上传 PDF / Word / PPT / Excel / Markdown / TXT / CSV 并点击“开始智能翻译”，即可在此处查看结果并下载译文。
                   </p>
                 </div>
               )}
