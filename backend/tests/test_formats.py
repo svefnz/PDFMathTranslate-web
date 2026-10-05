@@ -731,3 +731,41 @@ def test_plan_is_reported_before_the_first_request(tmp_path):
     batches, unique = plan[0]
     assert unique == 200
     assert batches > 1
+
+
+def test_concurrency_is_configurable_and_clamped(tmp_path):
+    """The UI thread count must reach the segment pipeline, but stay sane."""
+    from backend.formats.base import MAX_CONCURRENCY, MAX_CONCURRENCY_LIMIT
+
+    src = tmp_path / "conc.txt"
+    src.write_text("Hello concurrency\n")
+    translator = SegmentTranslator(FakeLlm(), "zh-CN", llm_capable=True, concurrency=1)
+    asyncio.run(run_pipeline(get_handler("conc.txt"), translator, src, tmp_path / "a.txt"))
+    assert translator._concurrency == 1
+
+    assert SegmentTranslator(FakeLlm(), "zh-CN", True)._concurrency == MAX_CONCURRENCY
+    assert SegmentTranslator(FakeLlm(), "zh-CN", True, concurrency=0)._concurrency == MAX_CONCURRENCY
+    assert (
+        SegmentTranslator(FakeLlm(), "zh-CN", True, concurrency=9999)._concurrency
+        == MAX_CONCURRENCY_LIMIT
+    )
+
+
+def test_segment_translator_honours_ui_thread_count(tmp_path):
+    """pool_max_workers flows from the request into the pipeline."""
+    from backend.adapter import TranslationAdapter
+
+    settings = _build_settings(
+        tmp_path, "OpenAI", {"openai_api_key": "sk-test", "openai_model": "gpt-4o-mini"}
+    )
+    settings.translation.pool_max_workers = 2
+
+    import pdf2zh_next.translator as upstream_translator
+
+    original = upstream_translator.get_translator
+    upstream_translator.get_translator = lambda _s: object()
+    try:
+        translator = TranslationAdapter.build_segment_translator(settings)
+    finally:
+        upstream_translator.get_translator = original
+    assert translator._concurrency == 2

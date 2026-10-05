@@ -196,6 +196,9 @@ class TranslationAdapter:
             llm_capable,
             glossary,
             batch_timeout=float(os.environ.get("SEGMENT_BATCH_TIMEOUT_S", "300")),
+            # honour the UI's thread count here too: fewer parallel calls is the
+            # first thing to try against a rate-limited endpoint
+            concurrency=settings.translation.pool_max_workers,
         )
 
     @staticmethod

@@ -40,7 +40,10 @@ logger = logging.getLogger("pdf2zh-web.formats")
 # --- tuning -----------------------------------------------------------------
 MAX_BATCH_CHARS = 2400  # per LLM request, keeps prompts small and cheap
 MAX_BATCH_ITEMS = 40
+#: In-flight batch requests. Overridable per job so the UI's thread setting
+#: (and a rate-limited engine's need for fewer parallel calls) actually apply.
 MAX_CONCURRENCY = 4
+MAX_CONCURRENCY_LIMIT = 16
 MAX_SPLIT_DEPTH = 3  # batch -> halves -> ... -> per-item fallback
 
 # A "letter" in any script (excludes digits, punctuation, whitespace). Used to
@@ -288,6 +291,7 @@ class SegmentTranslator:
         llm_capable: bool,
         glossary: str = "",
         batch_timeout: float | None = None,
+        concurrency: int | None = None,
     ) -> None:
         self._translator = translator
         self._lang_out = lang_out
@@ -298,6 +302,7 @@ class SegmentTranslator:
         # ponytail: the abandoned worker thread keeps running until the SDK gives
         # up (it cannot be killed); acceptable because a timeout aborts the job.
         self._batch_timeout = batch_timeout if batch_timeout and batch_timeout > 0 else None
+        self._concurrency = max(1, min(int(concurrency or MAX_CONCURRENCY), MAX_CONCURRENCY_LIMIT))
 
     @property
     def llm_capable(self) -> bool:
@@ -388,17 +393,18 @@ class SegmentTranslator:
         # Report the workload before the first request goes out, so the UI can
         # show a real denominator instead of an apparently frozen 1%.
         logger.info(
-            "Segment pipeline plan: %d slots, %d unique strings, %d batches",
+            "Segment pipeline plan: %d slots, %d unique strings, %d batches, concurrency %d",
             len(texts),
             len(unique),
             total,
+            self._concurrency,
         )
         if on_plan:
             on_plan(total, len(unique))
 
         completed = 0
         started = time.monotonic()
-        semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+        semaphore = asyncio.Semaphore(self._concurrency)
 
         async def run(batch: list[str]) -> tuple[list[str], list[str]]:
             async with semaphore:
