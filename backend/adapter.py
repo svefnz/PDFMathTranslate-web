@@ -24,6 +24,11 @@ from pdf2zh_next.config.translate_engine_model import (
 )
 from pdf2zh_next.high_level import TranslationError, do_translate_async_stream
 
+try:
+    from backend.formats.base import SegmentTranslator
+except ImportError:  # pragma: no cover - flat sys.path fallback
+    from formats.base import SegmentTranslator
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +153,42 @@ class TranslationAdapter:
         settings.validate_settings()
 
         return settings
+
+    @classmethod
+    def build_segment_translator(
+        cls,
+        settings: SettingsModel,
+        glossary: str = "",
+    ):
+        """Create a translator for the non-PDF segment pipeline.
+
+        The engine layer is deliberately *reused* rather than reimplemented:
+        ``get_translator`` gives us any of the 17 configured engines together
+        with their on-disk cache, rate limiting and chain-of-thought stripping.
+
+        ``support_llm`` tells us whether the engine exposes a raw-prompt entry
+        point. LLM engines can translate a whole batch of segments in one
+        request; classical MT engines (Google/Bing/DeepL) must go one segment
+        at a time, so the pipeline needs to know which strategy to use.
+        """
+        from pdf2zh_next.translator import get_translator
+
+        engine_settings = settings.translate_engine_settings
+        llm_capable = False
+        for metadata in TRANSLATION_ENGINE_METADATA:
+            if metadata.setting_model_type and isinstance(
+                engine_settings, metadata.setting_model_type
+            ):
+                llm_capable = bool(metadata.support_llm)
+                break
+
+        translator = get_translator(settings)
+        return SegmentTranslator(
+            translator,
+            settings.translation.lang_out,
+            llm_capable,
+            glossary,
+        )
 
     @classmethod
     async def translate_stream(

@@ -45,7 +45,15 @@ jobs:
         run: |
           pip install -e ./upstream-core
           pip install -r backend/requirements.txt
+          pip install pytest
           python -c "import pdf2zh_next; print('Successfully imported pdf2zh_next version:', pdf2zh_next.__version__)"
+
+      # The multi-format pipeline reuses upstream internals (get_translator,
+      # TRANSLATION_ENGINE_METADATA.support_llm), so these tests are exactly the
+      # canary for an upstream upgrade breaking our seam.
+      - name: Run Format Pipeline Tests
+        if: steps.check_diff.outputs.has_changes == 'true'
+        run: python -m pytest backend/tests -q
 
       - name: Commit and Push Submodule Pointer
         if: steps.check_diff.outputs.has_changes == 'true'
