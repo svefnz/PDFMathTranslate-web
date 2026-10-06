@@ -19,6 +19,7 @@ import {
   LogOut,
   User,
   Hand,
+  History,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -36,6 +37,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { SettingsDialog } from "@/components/SettingsDialog"
+import { TaskHistoryDialog } from "@/components/TaskHistoryDialog"
+import { withAuthToken, type TranslationTask } from "@/types/tasks"
 import { LoginDialog } from "@/components/LoginDialog"
 import { type AppSettings, loadSettings, saveSettings } from "@/types/settings"
 
@@ -237,6 +240,9 @@ export function App() {
   // Translation execution state
   const [isTranslating, setIsTranslating] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // bumped on every finish so the history dialog refetches while it is open
+  const [historyRefresh, setHistoryRefresh] = useState(0)
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState("")
   const [stageDetail, setStageDetail] = useState("")
@@ -518,6 +524,7 @@ export function App() {
                   })
                   setPreviewTab("dual")
                   setIsTranslating(false)
+                  setHistoryRefresh((n) => n + 1)
                 } else if (currentEvent === "error") {
                   let errText = parsed.error || "翻译过程中发生错误"
                   if (typeof errText === "string" && errText.includes("Scanned PDF detected")) {
@@ -560,20 +567,47 @@ export function App() {
     setStage("翻译已取消")
   }
 
-  const activePdfUrl =
+  // Pull a finished task from the history back into the preview workspace.
+  const handleLoadTask = (task: TranslationTask) => {
+    const pick = (kind: string) =>
+      task.artifacts.find((artifact) => artifact.kind === kind)?.url || null
+    const mono = pick("mono")
+    const dual = pick("dual")
+    const glossary = pick("glossary")
+
+    setResult({ monoUrl: mono, dualUrl: dual, glossaryUrl: glossary })
+    if (task.file_id) {
+      setFile({
+        fileId: task.file_id,
+        filename: task.filename || task.file_id,
+        size: task.size || 0,
+        originalUrl: task.source_available
+          ? `/api/uploads/${task.file_id}`
+          : undefined,
+      })
+    }
+    setErrorMsg(null)
+    setProgress(100)
+    setStage("已载入历史任务")
+    setStageDetail("")
+    setPreviewTab(dual ? "dual" : mono ? "mono" : "original")
+    setHistoryOpen(false)
+  }
+
+  // The download/preview routes require auth now, and an iframe cannot send
+  // headers -- so the token goes in the query string (get_current_user accepts it).
+  const pdfPreviewUrl =
     previewTab === "dual" && result?.dualUrl
-      ? `${result.dualUrl}#view=FitH`
+      ? result.dualUrl
       : previewTab === "mono" && result?.monoUrl
-      ? `${result.monoUrl}#view=FitH`
+      ? result.monoUrl
       : previewTab === "original" && file?.originalUrl
-      ? `${file.originalUrl}#view=FitH`
-      : result?.dualUrl
-      ? `${result.dualUrl}#view=FitH`
-      : result?.monoUrl
-      ? `${result.monoUrl}#view=FitH`
-      : file?.originalUrl
-      ? `${file.originalUrl}#view=FitH`
-      : null
+      ? file.originalUrl
+      : result?.dualUrl || result?.monoUrl || file?.originalUrl || null
+
+  const activePdfUrl = pdfPreviewUrl
+    ? `${withAuthToken(pdfPreviewUrl, authToken)}#view=FitH`
+    : null
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans transition-colors">
@@ -609,6 +643,18 @@ export function App() {
               </button>
             </div>
           )}
+
+          {/* History Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHistoryOpen(true)}
+            className="gap-1.5 rounded-full text-xs h-8 font-medium shadow-2xs hover:bg-muted"
+            title="查看历史任务、下载译文、删除与清理"
+          >
+            <History className="w-3.5 h-3.5 text-primary" />
+            <span className="hidden sm:inline">历史任务</span>
+          </Button>
 
           {/* Settings Center Button */}
           <Button
@@ -948,7 +994,7 @@ export function App() {
                 {result && (
                   <div className="pt-2 border-t flex flex-wrap gap-2">
                     {result.dualUrl && (
-                      <a href={result.dualUrl} download target="_blank" rel="noreferrer">
+                      <a href={withAuthToken(result.dualUrl, authToken) || undefined} download target="_blank" rel="noreferrer">
                         <Button size="sm" variant="default" className="rounded-xl gap-1.5 text-xs h-8">
                           <Download className="w-3.5 h-3.5" />
                           <span>下载双语对照版</span>
@@ -956,7 +1002,7 @@ export function App() {
                       </a>
                     )}
                     {result.monoUrl && (
-                      <a href={result.monoUrl} download target="_blank" rel="noreferrer">
+                      <a href={withAuthToken(result.monoUrl, authToken) || undefined} download target="_blank" rel="noreferrer">
                         <Button size="sm" variant="outline" className="rounded-xl gap-1.5 text-xs h-8">
                           <Download className="w-3.5 h-3.5" />
                           <span>下载单语译文版</span>
@@ -964,7 +1010,7 @@ export function App() {
                       </a>
                     )}
                     {result.glossaryUrl && (
-                      <a href={result.glossaryUrl} download target="_blank" rel="noreferrer">
+                      <a href={withAuthToken(result.glossaryUrl, authToken) || undefined} download target="_blank" rel="noreferrer">
                         <Button size="sm" variant="secondary" className="rounded-xl gap-1.5 text-xs h-8">
                           <BookOpen className="w-3.5 h-3.5" />
                           <span>下载术语表</span>
@@ -1143,6 +1189,15 @@ export function App() {
         onOpenChange={setSettingsOpen}
         settings={settings}
         onSave={handleSaveSettings}
+      />
+
+      {/* Task History Dialog */}
+      <TaskHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        authToken={authToken}
+        refreshKey={historyRefresh}
+        onLoadTask={handleLoadTask}
       />
 
       {/* User Login Authentication Dialog */}
