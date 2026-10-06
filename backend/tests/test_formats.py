@@ -769,3 +769,156 @@ def test_segment_translator_honours_ui_thread_count(tmp_path):
     finally:
         upstream_translator.get_translator = original
     assert translator._concurrency == 2
+
+
+# ---------------------------------------------------------------------------
+# opaque SDK wrappers must be unwrapped into something actionable
+# ---------------------------------------------------------------------------
+def _retry_error(inner: BaseException):
+    """Build the exact wrapper tenacity produces (a settled Future holding the cause)."""
+    from tenacity import Future, RetryError
+
+    attempt = Future(attempt_number=1)
+    attempt.set_exception(inner)
+    return RetryError(attempt)
+
+
+def test_unwrapper_never_blocks_on_an_unfinished_future():
+    """Regression: Future.exception() waits, so the error path could deadlock.
+
+    Calling it without the done() guard hangs forever, taking the event loop
+    with it -- which is far worse than the unhelpful message it was fixing.
+    """
+    import threading
+
+    from tenacity import Future, RetryError
+
+    from backend.formats.base import _root_cause, describe_engine_error
+
+    pending = Future(attempt_number=1)  # never completed
+    wrapped = RetryError(pending)
+
+    finished = threading.Event()
+
+    def run():
+        _root_cause(wrapped)
+        describe_engine_error(wrapped, "OpenAITranslator")
+        finished.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert finished.wait(timeout=3), "error formatting blocked on an unfinished future"
+
+
+def test_retry_error_is_unwrapped_to_the_real_cause():
+    """tenacity stringifies as a Future repr; the user needs the status code."""
+    import httpx
+
+    from backend.formats.base import _root_cause, describe_engine_error
+
+    inner = httpx.HTTPStatusError(
+        "403 Forbidden",
+        request=httpx.Request("POST", "https://api.example.com/v1"),
+        response=httpx.Response(403),
+    )
+    wrapped = _retry_error(inner)
+    assert "Future" in str(wrapped)  # the useless message users were seeing
+
+    assert _root_cause(wrapped) is inner
+    message = describe_engine_error(wrapped, "SiliconFlowFreeTranslator")
+    assert "Future at 0x" not in message, message
+    assert "403" in message and "拒绝访问" in message
+    assert "SiliconFlowFreeTranslator" in message
+    assert "设置中心" in message  # the free-engine advice
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (401, "API Key 无效"),
+        (403, "拒绝访问"),
+        (404, "Base URL"),
+        (429, "限流"),
+        (500, "服务端错误"),
+        (503, "服务端错误"),
+    ],
+)
+def test_status_codes_map_to_readable_reasons(status, expected):
+    import httpx
+
+    from backend.formats.base import describe_engine_error
+
+    request = httpx.Request("POST", "https://api.example.com/v1")
+    exc = httpx.HTTPStatusError(
+        f"{status}",
+        request=request,
+        response=httpx.Response(status, json={"error": "nope"}, request=request),
+    )
+    message = describe_engine_error(exc, "OpenAITranslator")
+    assert expected in message, message
+    assert "设置中心" not in message  # paid engines get no free-engine advice
+
+
+def test_provider_body_is_included_in_the_message():
+    """The free proxy answers 400 {"message":"Keyword not allowed"}; that text is
+    the single most useful clue, so it must survive into the UI."""
+    import httpx
+    from tenacity import Future, RetryError
+
+    from backend.formats.base import describe_engine_error
+
+    request = httpx.Request("POST", "https://api1.pdf2zh-next.com/chatproxy")
+    response = httpx.Response(400, json={"message": "Keyword not allowed"}, request=request)
+    attempt = Future(attempt_number=1)
+    attempt.set_exception(
+        httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+    )
+
+    message = describe_engine_error(RetryError(attempt), "SiliconFlowFreeTranslator")
+    assert "Keyword not allowed" in message, message
+    assert "Future at 0x" not in message
+    assert "HTTP 400" in message
+    assert "SiliconFlowFree" in message
+
+
+def test_exception_groups_and_chains_are_unwrapped():
+    from backend.formats.base import describe_engine_error
+
+    try:
+        try:
+            raise ValueError("the actual cause")
+        except ValueError as inner:
+            raise RuntimeError("wrapper") from inner
+    except RuntimeError as exc:
+        assert "the actual cause" in describe_engine_error(exc)
+
+    group = BaseExceptionGroup("many", [ConnectionError("socket refused")])
+    assert "无法连接" in describe_engine_error(group, "OpenAITranslator")
+
+
+def test_engine_error_message_has_no_wrapper_jargon():
+    """Whatever goes in, the user-facing text must not be a repr dump."""
+    from backend.formats.base import describe_engine_error
+
+    for exc in (
+        RuntimeError("boom"),
+        ValueError("weird"),
+        ConnectionError("Network is unreachable"),
+    ):
+        message = describe_engine_error(exc, "OpenAITranslator")
+        assert message.startswith("大模型接口调用失败")
+        assert "原因：" in message
+
+
+def test_plain_path_failures_are_wrapped_too(tmp_path):
+    """Classical MT engines (Google/Bing/DeepL) raise from translate(), not the
+    raw-prompt entry point, and used to leak the raw exception."""
+    src = tmp_path / "mt.txt"
+    src.write_text("Hello classical engine\n")
+    fake = FailingEngine(ConnectionError("Network is unreachable"))
+    translator = SegmentTranslator(fake, "zh-CN", llm_capable=False)
+
+    with pytest.raises(BatchTranslationError) as excinfo:
+        asyncio.run(run_pipeline(get_handler("mt.txt"), translator, src, tmp_path / "out.txt"))
+    message = str(excinfo.value)
+    assert "大模型接口调用失败" in message and "无法连接" in message

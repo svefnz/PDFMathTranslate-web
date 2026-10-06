@@ -69,9 +69,32 @@ INFO:pdf2zh-web.formats:Batch 1/162 done (12.4s elapsed, 40 strings)
 
 日志停在 `plan:` 后面而没有 `Batch ... done`、并且前端出现「等待响应 Ns」，那就是接口在限流或不可用。处理办法（按优先级）：
 
-1. 换成有余额的付费接口 / 自建 Ollama（Ollama 不跟额度无关）；
-2. 降低并发（设置中心 → 高级配置 → 线程数），避开对方的 QPS 限制；
+1. 换成有余额的付费接口 / 自建 Ollama（Ollama 不跟额度无关）；2. 降低并发（设置中心 → 高级配置 → 线程数），避开对方的 QPS 限制；
 3. 如果是 429 很严重，把 `SEGMENT_BATCH_TIMEOUT_S` 调小，让它快速失败而不是慢慢磨。
+
+#### 关于免费引擎 `SiliconFlowFree`
+
+它是前端默认值（零配置即可试用），但依赖上游的公共代理，**实测经常不可用**：
+
+```
+https://api1.pdf2zh-next.com/chatproxy   →  HTTP 400  {"message":"Keyword not allowed"}
+https://api2.pdf2zh-next.com/chatproxy   →  连接失败（DNS 指向 69.63.218.17，不在 Cloudflare 上）
+```
+
+所以出现下面这种报错时 —— 特别是接口返回里带着 `Keyword not allowed` —— 不是你的文档有问题，也不需要在代码里调参，**直接换引擎**：
+
+```
+大模型接口调用失败（SiliconFlowFree / HTTPStatusError: ...  400 Bad Request）
+| 接口返回：{"message":"Keyword not allowed"}。
+原因：接口拒绝了这次请求，常见原因是模型名错误或内容被风控拦截（HTTP 400）。
+当前用的是免费公共引擎 SiliconFlowFree，它的公共代理经常限流、地区受限或直接拒绝请求……
+```
+
+到右上角「设置中心」→「服务与密钥」填入 SiliconFlow（自己的 Key）/ DeepSeek / OpenAI 的 Key，或指向本地 Ollama。
+
+#### 看不到真实原因？
+
+Python SDK 和 `tenacity` 会把真正的异常包进一个信息量为零的 repr（这就是 `RetryError[<Future at 0x... state=finished raised HTTPError>]` 的来源）。本项目会**剥掉包装层**、取回真正的异常与状态码，并把接口返回的原文一并展示。
 
 | 环境变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |

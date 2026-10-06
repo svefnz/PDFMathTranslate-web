@@ -70,24 +70,125 @@ class BatchTranslationError(RuntimeError):
     """
 
 
-def describe_engine_error(exc: BaseException) -> str:
+def _attempt_failure(attempt: Any) -> BaseException | None:
+    """Extract the stored exception from a settled future-like object.
+
+    Must never block: ``concurrent.futures.Future.exception()`` waits for the
+    future to finish, so calling it on an unfinished one would hang the error
+    path -- and the event loop with it. Hence the ``done()`` guard.
+    """
+    done = getattr(attempt, "done", None)
+    if not callable(done):
+        return None
+    try:
+        if not done():
+            return None
+    except Exception:
+        return None
+    for getter in ("exception", "result"):
+        method = getattr(attempt, getter, None)
+        if not callable(method):
+            continue
+        try:
+            value = method()
+        except BaseException as raised:  # result() re-raises for async attempts
+            return raised
+        if isinstance(value, BaseException):
+            return value
+    return None
+
+
+def _root_cause(exc: BaseException, depth: int = 0) -> BaseException:
+    """Peel the wrappers SDKs put around the real failure.
+
+    ``tenacity``'s ``RetryError`` in particular stringifies as a Future repr
+    (``RetryError[<Future at 0x... state=finished raised HTTPStatusError>]``),
+    which tells the user nothing and hides the actual status code.
+    """
+    if depth >= 5:
+        return exc
+
+    attempt = getattr(exc, "last_attempt", None)
+    if attempt is not None:
+        inner = _attempt_failure(attempt)
+        if inner is not None:
+            return _root_cause(inner, depth + 1)
+
+    group = getattr(exc, "exceptions", None)  # BaseExceptionGroup
+    if isinstance(group, (list, tuple)) and group:
+        return _root_cause(group[0], depth + 1)
+
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        return _root_cause(cause, depth + 1)
+    return exc
+
+
+_STATUS_HINTS: dict[int, str] = {
+    400: "接口拒绝了这次请求，常见原因是模型名错误或内容被风控拦截",
+    401: "API Key 无效或已过期",
+    403: "接口拒绝访问（地区/IP 限制，或该 Key 无权限）",
+    404: "接口地址不存在，Base URL 很可能填错了",
+    413: "请求内容过大",
+    422: "请求格式不被接口接受（模型名可能写错了）",
+    429: "接口限流或额度不足",
+}
+
+
+def describe_engine_error(exc: BaseException, engine: str = "") -> str:
     """Turn an opaque SDK exception into something a user can act on."""
-    name = type(exc).__name__
-    text = str(exc)
+    root = _root_cause(exc)
+    name = type(root).__name__
+    # Collapse the SDK's multi-line message and drop its "For more information"
+    # documentation footer; it is noise for an end user.
+    text = " ".join(str(root).split()).split("For more information")[0].strip()
     lowered = text.lower()
-    if "429" in text or "ratelimit" in name.lower() or "rate limit" in lowered or "quota" in lowered:
-        hint = "（接口限流或额度不足：请检查 API Key 的余额/速率限制，或换用其他引擎）"
+    response = getattr(root, "response", None)
+    status = getattr(response, "status_code", None)
+
+    # The provider's own message is often the most useful thing available
+    # (the free proxy answers 400 {"message": "Keyword not allowed"}).
+    body = ""
+    if response is not None:
+        try:
+            snippet = " ".join((response.text or "").split())
+        except Exception:  # noqa: BLE001 - body may not have been read
+            snippet = ""
+        if snippet:
+            body = f" | 接口返回：{snippet[:160]}"
+
+    if isinstance(status, int) and status in _STATUS_HINTS:
+        reason = f"{_STATUS_HINTS[status]}（HTTP {status}）"
+    elif isinstance(status, int) and 500 <= status < 600:
+        reason = f"接口服务端错误（HTTP {status}），通常稍后重试即可"
+    elif isinstance(status, int) and 400 <= status < 500:
+        reason = f"接口拒绝了这次请求（HTTP {status}）"
+    elif "429" in text or "ratelimit" in name.lower() or "rate limit" in lowered or "quota" in lowered:
+        reason = "接口限流或额度不足"
     elif "401" in text or "authentication" in name.lower() or "invalid_api_key" in lowered:
-        hint = "（API Key 无效或已过期）"
+        reason = "API Key 无效或已过期"
     elif "403" in text or "permission" in lowered:
-        hint = "（API Key 无该模型权限）"
+        reason = "接口拒绝访问（地区/IP 限制，或该 Key 无权限）"
     elif "timeout" in lowered or "timeout" in name.lower():
-        hint = "（接口超时：可调低并发或稍后重试）"
-    elif "connection" in lowered or "connect" in name.lower():
-        hint = "（无法连接接口：请检查网络或 Base URL）"
+        reason = "接口超时，可降低线程数或稍后重试"
+    elif "connect" in lowered or "connect" in name.lower():
+        reason = "无法连接接口，请检查服务器网络与 Base URL"
+    elif "http" in name.lower():
+        reason = "接口返回了错误状态码"
     else:
-        hint = ""
-    return f"大模型接口调用失败：{name}: {text[:300]}{hint}"
+        reason = "未识别的接口错误"
+
+    where = f"{engine} / " if engine else ""
+    message = f"大模型接口调用失败（{where}{name}: {text[:200]}）{body}。原因：{reason}。"
+    engine_lower = engine.lower()
+    if "free" in engine_lower or "siliconflowfree" in name.lower():
+        message += (
+            "当前用的是免费公共引擎 SiliconFlowFree，它的公共代理经常限流、地区受限或直接拒绝请求；"
+            "请在右上角「设置中心」换成自己的 API Key（SiliconFlow / DeepSeek / OpenAI）或本地 Ollama。"
+        )
+    elif status == 400:
+        message += "请确认模型名拼写正确、且该模型对你的 Key 可用。"
+    return message
 
 
 class StringSlot:
@@ -303,6 +404,11 @@ class SegmentTranslator:
         # up (it cannot be killed); acceptable because a timeout aborts the job.
         self._batch_timeout = batch_timeout if batch_timeout and batch_timeout > 0 else None
         self._concurrency = max(1, min(int(concurrency or MAX_CONCURRENCY), MAX_CONCURRENCY_LIMIT))
+        #: only used to make error messages say which engine failed
+        self._engine = type(translator).__name__
+
+    def _engine_error(self, exc: BaseException) -> "BatchTranslationError":
+        return BatchTranslationError(describe_engine_error(exc, self._engine))
 
     @property
     def llm_capable(self) -> bool:
@@ -349,7 +455,7 @@ class SegmentTranslator:
                 # splitting the batch would only multiply the same failing call
                 # (one 429 batch would become thousands). Fail fast instead, with
                 # a message that says what the user can actually do.
-                raise BatchTranslationError(describe_engine_error(exc)) from exc
+                raise self._engine_error(exc) from exc
 
             parsed = _parse_json_array(raw, len(batch))
             if parsed is not None:
@@ -369,7 +475,12 @@ class SegmentTranslator:
             tail = await self._translate_batch(batch[middle:], depth + 1)
             return head + tail
 
-        return [await self._call(self._plain, item) for item in batch]
+        try:
+            return [await self._call(self._plain, item) for item in batch]
+        except BatchTranslationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - classical MT engines raise too
+            raise self._engine_error(exc) from exc
 
     async def translate_all(
         self,

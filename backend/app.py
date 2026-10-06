@@ -686,8 +686,15 @@ async def stream_translation(
                 ),
             )
         except Exception as e:
-            logger.error(f"Failed to build segment translator: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.error(f"Failed to build segment translator: {e}", exc_info=True)
+            try:
+                from backend.formats.base import describe_engine_error
+            except ImportError:
+                from formats.base import describe_engine_error
+            raise HTTPException(
+                status_code=400,
+                detail=describe_engine_error(e, req.engine_type),
+            )
         output_path = session_output_dir / (
             f"{file_path.stem}_{req.lang_out}{file_path.suffix.lower()}"
         )
@@ -752,10 +759,21 @@ async def stream_translation(
                 "data": json.dumps({"session_id": session_id, "message": "Translation cancelled"}),
             }
         except Exception as e:
+            # Surface the real cause: SDKs and tenacity wrap failures in unhelpful
+            # reprs ("RetryError[<Future ... raised HTTPError>]").
+            try:
+                from backend.formats.base import describe_engine_error
+            except ImportError:
+                from formats.base import describe_engine_error
+            message = (
+                describe_engine_error(e, req.engine_type)
+                if producer is not None
+                else str(e) or type(e).__name__
+            )
             logger.error(f"Translation error in session {session_id}: {e}", exc_info=True)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e), "session_id": session_id}),
+                "data": json.dumps({"error": message, "session_id": session_id}),
             }
         finally:
             active_tasks.pop(session_id, None)
